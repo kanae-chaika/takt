@@ -296,8 +296,6 @@ export const fileSystemIntegrationTestFiles = Object.freeze([
   'src/__tests__/session-reader.test.ts',
   'src/__tests__/sessionStore.test.ts',
   'src/__tests__/task-delete-task.test.ts',
-  'src/__tests__/task-exceed-service.test.ts',
-  'src/__tests__/task.test.ts',
   'src/__tests__/taskDeleteActions.test.ts',
   'src/__tests__/taskResultHandler.test.ts',
   'src/__tests__/taskSpecContext.test.ts',
@@ -349,7 +347,6 @@ export const lightNamedIntegrationTestFiles = Object.freeze([
   'src/__tests__/it-opencode-task-state-mcp.test.ts',
   'src/__tests__/it-run-session-instruct.test.ts',
   'src/__tests__/it-system-enqueue-effect-duplicate.test.ts',
-  'src/__tests__/it-task-restart-point.test.ts',
   'src/__tests__/it-web-ui-chat-tell.test.ts',
   'src/__tests__/it-workflow-loader.test.ts',
   'src/__tests__/it-workflow-policy.test.ts',
@@ -390,6 +387,11 @@ export const parallelIntegrationTestFiles = Object.freeze([
 // Add a file here only with a measured interference reason.
 export const serialGitTestFiles = Object.freeze([
   'src/__tests__/companion-diff-runtime.integration.test.ts',
+  // 2026-09-27: Measurement found 1,054 synchronous private-artifact helper calls taking about 60s across 79 tests; two five-worker light IT runs timed out in onTaskUpdate, while the serial runner completed all 79.
+  'src/__tests__/task.test.ts',
+  // 2026-09-27: With five forks, task-exceed-service used 444 helper spawns (~98.6s) and it-task-restart-point used 271 (~66.8s), with RPC timeouts in both. The same 162-file run with one forked worker completed without timeouts.
+  'src/__tests__/task-exceed-service.test.ts',
+  'src/__tests__/it-task-restart-point.test.ts',
   // 2026-08-09: ラウンド9で遷移表→実 WorkflowEngine シナリオへ置換した結果、Git fixture+filesystem I/O の重量級になった(#1264 shard 飽和の主因)。
   // 2026-08-09: heavy 並列スライスで birpc onTaskUpdate 期限超過が CI 2コアランナーで2連続再現(#1264)。filesystem+fsync 負荷の実測干渉のため serial へ。
   'src/__tests__/it-operation-journal-store.test.ts',

@@ -22,12 +22,75 @@ const { fakeQuintVerify } = vi.hoisted(() => ({
   fakeQuintVerify: { mode: 'passthrough' as 'passthrough' | 'passed' | 'failed' },
 }));
 
+const { fakeQuintParse } = vi.hoisted(() => ({
+  fakeQuintParse: {
+    mode: 'passthrough' as 'passthrough' | 'missing' | 'file' | 'directory',
+    contents: '',
+    stdout: '',
+    stderr: '',
+  },
+}));
+
+const { fakeQuintRun } = vi.hoisted(() => ({
+  fakeQuintRun: {
+    mode: 'passthrough' as 'passthrough' | 'failed',
+    stdout: '',
+    stderr: '',
+  },
+}));
+
 vi.mock('../shared/utils/spawn.js', async () => {
   const actual = await vi.importActual<typeof import('../shared/utils/spawn.js')>('../shared/utils/spawn.js');
   return {
     ...actual,
     spawnManagedProcess: (...args: Parameters<typeof actual.spawnManagedProcess>) => {
       spawnedProcessCalls.push({ command: args[0], args: [...args[1]] });
+      if (fakeQuintParse.mode !== 'passthrough' && args[1][1] === 'parse') {
+        const parseOutputIndex = args[1].indexOf('--out') + 1;
+        const parseOutputPath = args[1][parseOutputIndex];
+        if (parseOutputPath === undefined) {
+          throw new Error('Quint parse output path was missing');
+        }
+        const script = [
+          "const fs = require('node:fs');",
+          'const [outputPath, mode, contents, stdout, stderr] = process.argv.slice(1);',
+          "if (mode === 'file') fs.writeFileSync(outputPath, contents);",
+          "if (mode === 'directory') fs.mkdirSync(outputPath);",
+          "if (stdout) process.stdout.write(stdout);",
+          "if (stderr) process.stderr.write(stderr);",
+          'process.exitCode = 1;',
+        ].join('\n');
+        return actual.spawnManagedProcess(
+          process.execPath,
+          [
+            '-e',
+            script,
+            parseOutputPath,
+            fakeQuintParse.mode,
+            fakeQuintParse.contents,
+            fakeQuintParse.stdout,
+            fakeQuintParse.stderr,
+          ],
+          args[2],
+          args[3],
+          args[4],
+        );
+      }
+      if (fakeQuintRun.mode !== 'passthrough' && args[1][1] === 'run') {
+        const script = [
+          'const [stdout, stderr] = process.argv.slice(1);',
+          'if (stdout) process.stdout.write(stdout);',
+          'if (stderr) process.stderr.write(stderr);',
+          'process.exitCode = 1;',
+        ].join('\n');
+        return actual.spawnManagedProcess(
+          process.execPath,
+          ['-e', script, fakeQuintRun.stdout, fakeQuintRun.stderr],
+          args[2],
+          args[3],
+          args[4],
+        );
+      }
       if (fakeQuintVerify.mode !== 'passthrough' && args[1][1] === 'verify') {
         const exitCode = fakeQuintVerify.mode === 'failed' ? 1 : 0;
         const script = exitCode === 0
@@ -50,6 +113,8 @@ import {
   detectJavaMajorVersion,
   runFormalSpecVerification,
 } from '../features/interactive/formalSpecVerifier.js';
+import { createConversationSession } from '../features/interactive/conversationSession.js';
+import { makeProvider, makeSessionContext } from './test-helpers.js';
 
 const require = createRequire(import.meta.url);
 
@@ -243,9 +308,66 @@ function argumentAfter(args: readonly string[], option: string): string | undefi
   return index >= 0 ? args[index + 1] : undefined;
 }
 
+interface VerificationSnapshot {
+  readonly message?: string;
+  readonly quint?: {
+    readonly parse?: { readonly status?: string; readonly message?: string };
+    readonly typecheck?: { readonly status?: string };
+    readonly run?: { readonly status?: string; readonly message?: string };
+    readonly invariants?: readonly string[];
+  };
+}
+
+function createVerifySession(cwd: string, specification: string) {
+  const observedVerifications: VerificationSnapshot[] = [];
+  const providerResponses: string[] = [];
+  const provider = makeProvider({
+    setup: ({ name }) => ({
+      call: async (prompt) => {
+        const verificationMatch = /<verification-result>\n([\s\S]*?)\n<\/verification-result>/u.exec(prompt);
+        let content = specification;
+        if (verificationMatch !== null) {
+          const verification = JSON.parse(verificationMatch[1] ?? '') as VerificationSnapshot;
+          observedVerifications.push(verification);
+          content = verification.message ?? '';
+        }
+        providerResponses.push(content);
+        return {
+          persona: name,
+          status: 'done',
+          content,
+          timestamp: new Date(),
+        };
+      },
+    }),
+  });
+  const session = createConversationSession({
+    cwd,
+    formalSpec: true,
+    modelCheckTimeoutSeconds: 300,
+    outputMode: 'silent',
+    ctx: makeSessionContext({ provider }),
+    strategy: {
+      systemPrompt: 'formal specification test session',
+      modelCheckTimeoutSeconds: 300,
+      allowedTools: [],
+      transformPrompt: (message) => message,
+    },
+  });
+
+  return { session, observedVerifications, providerResponses };
+}
+
 beforeEach(() => {
   spawnedProcessCalls.length = 0;
   fakeQuintVerify.mode = 'passthrough';
+  fakeQuintParse.mode = 'passthrough';
+  fakeQuintParse.contents = '';
+  fakeQuintParse.stdout = '';
+  fakeQuintParse.stderr = '';
+  fakeQuintRun.mode = 'passthrough';
+  fakeQuintRun.stdout = '';
+  fakeQuintRun.stderr = '';
 });
 
 describe('bundled Quint CLI verification boundary', () => {
@@ -299,6 +421,600 @@ describe('bundled Quint CLI verification boundary', () => {
     }
 
     expect(existsSync(directory)).toBe(false);
+  });
+
+  it('includes the Quint parse diagnostic and the specification source position after a parse failure', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-parse-diagnostic-'));
+    const response = [
+      '```quint',
+      'module verify {',
+      '  val note = true',
+      '  var enabled: bool',
+      '}',
+      '```',
+    ].join('\n');
+
+    try {
+      const result = await runFormalSpecVerification(response, directory, { modelCheckTimeoutSeconds: 300 });
+      const quintCli = require.resolve('@informalsystems/quint/dist/src/cli.js');
+      const quintCalls = spawnedProcessCalls.filter(({ command, args }) => (
+        command === process.execPath && args.includes(quintCli)
+      ));
+
+      expect(result.quint.parse?.status).toBe('error');
+      expect(result.message).toContain("[QNT101] Built-in name 'enabled' is redefined in module 'verify'");
+      expect(result.message).toContain('spec.qnt:3:3');
+      expect(result.quint.typecheck?.status).toBe('skipped');
+      expect(result.quint.run?.status).toBe('skipped');
+      expect(quintCalls.map(({ args }) => args[1])).toEqual(['parse']);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      name: 'missing parse JSON with no process output',
+      mode: 'missing' as const,
+      contents: '',
+      stdout: '',
+      stderr: '',
+      expectedMessage: 'Process exited with status 1',
+      excludedMessages: [],
+    },
+    {
+      name: 'malformed parse JSON with both process streams',
+      mode: 'file' as const,
+      contents: '{"errors":[',
+      stdout: 'parse stdout',
+      stderr: 'parse stderr',
+      expectedMessage: 'parse stderr\nparse stdout',
+      excludedMessages: [],
+    },
+    {
+      name: 'unreadable parse JSON with process output',
+      mode: 'directory' as const,
+      contents: '',
+      stdout: '',
+      stderr: 'parse stderr',
+      expectedMessage: 'parse stderr',
+      excludedMessages: [],
+    },
+    {
+      name: 'an empty root errors array with nested and quoted errors',
+      mode: 'file' as const,
+      contents: JSON.stringify({
+        errors: [],
+        modules: [{ errors: [{ explanation: 'nested fake diagnostic' }] }],
+        note: '"errors":[{"explanation":"quoted fake diagnostic"}]',
+      }),
+      stdout: '',
+      stderr: 'parse failed',
+      expectedMessage: 'parse failed',
+      excludedMessages: ['nested fake diagnostic', 'quoted fake diagnostic'],
+    },
+    {
+      name: 'a root errors field with the wrong type',
+      mode: 'file' as const,
+      contents: JSON.stringify({ errors: 'not an array' }),
+      stdout: '',
+      stderr: 'parse failed',
+      expectedMessage: 'parse failed',
+      excludedMessages: [],
+    },
+  ])('delivers the parse failure fallback through /verify for $name', async ({
+    mode,
+    contents,
+    stdout,
+    stderr,
+    expectedMessage,
+    excludedMessages,
+  }) => {
+    fakeQuintParse.mode = mode;
+    fakeQuintParse.contents = contents;
+    fakeQuintParse.stdout = stdout;
+    fakeQuintParse.stderr = stderr;
+
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-verify-fallback-'));
+    const { session, observedVerifications } = createVerifySession(directory, '```quint\nmodule verify {}\n```');
+
+    try {
+      const result = await session.handleUserMessage({ text: '/verify' });
+
+      if (result.kind !== 'assistant_response') {
+        throw new Error(`Expected /verify to return an assistant response, received ${result.kind}`);
+      }
+      expect(result.content).toContain(expectedMessage);
+      expect(observedVerifications.map(({ quint }) => quint?.parse)).toEqual([
+        { status: 'error', message: expectedMessage },
+      ]);
+
+      const quintCli = require.resolve('@informalsystems/quint/dist/src/cli.js');
+      const quintCalls = spawnedProcessCalls.filter(({ command, args }) => (
+        command === process.execPath && args.includes(quintCli)
+      ));
+      expect(quintCalls.map(({ args }) => args[1])).toEqual(['parse']);
+      for (const excludedMessage of excludedMessages) {
+        expect(result.content).not.toContain(excludedMessage);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it.each([
+    {
+      name: 'diagnostics exceed the message limit',
+      lengths: [3_900, 3_900, 300],
+      expectedRenderedCount: 2,
+      expectedOmissionNote: '他 1 件の診断を省略',
+    },
+    {
+      name: 'all diagnostics fit within the message limit',
+      lengths: [3_900, 3_900, 100],
+      expectedRenderedCount: 3,
+      expectedOmissionNote: undefined,
+    },
+  ])('delivers parse diagnostics through /verify when $name', async ({
+    lengths,
+    expectedRenderedCount,
+    expectedOmissionNote,
+  }) => {
+    const diagnosticDefinitions = [
+      { code: '[QNT101] ', line: 2, position: 'spec.qnt:3:3' },
+      { code: '[QNT202] ', line: 4, position: 'spec.qnt:5:3' },
+      { code: '[QNT303] ', line: 6, position: 'spec.qnt:7:3' },
+    ];
+    const diagnostics = diagnosticDefinitions.map(({ code, line, position }, index) => {
+      const length = lengths[index]!;
+      const locationPrefix = `${position}: `;
+      const explanation = `${code}${'x'.repeat(length - locationPrefix.length - code.length)}`;
+      return {
+        expectedText: `${locationPrefix}${explanation}`,
+        value: {
+          explanation,
+          locs: [{ source: '/tmp/spec.qnt', start: { line, col: 2 } }],
+        },
+      };
+    });
+    fakeQuintParse.mode = 'file';
+    fakeQuintParse.contents = JSON.stringify({ errors: diagnostics.map(({ value }) => value) });
+
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-verify-parse-overflow-'));
+    const specification = '```quint\nmodule verify {}\n```';
+    const { session, observedVerifications, providerResponses } = createVerifySession(directory, specification);
+
+    try {
+      const result = await session.handleUserMessage({ text: '/verify' });
+
+      if (result.kind !== 'assistant_response') {
+        throw new Error(`Expected /verify to return an assistant response, received ${result.kind}`);
+      }
+
+      const verification = observedVerifications[0];
+      const parseMessage = verification?.quint?.parse?.message ?? '';
+      const expectedRenderedDiagnostics = diagnostics
+        .slice(0, expectedRenderedCount)
+        .map(({ expectedText }) => expectedText);
+      const expectedMessage = [
+        ...expectedRenderedDiagnostics,
+        ...(expectedOmissionNote === undefined ? [] : [expectedOmissionNote]),
+      ].join('\n');
+      const generatedSpecificationPrefix = `${specification}\n\n`;
+      const finalResponse = result.content.slice(generatedSpecificationPrefix.length);
+      const providerResponse = providerResponses.at(-1) ?? '';
+
+      expect(result.content.startsWith(generatedSpecificationPrefix)).toBe(true);
+      expect(parseMessage).toBe(expectedMessage);
+      expect(parseMessage.length).toBeLessThanOrEqual(8_000);
+      expect(verification?.quint?.parse?.status).toBe('error');
+      expect(verification?.quint?.typecheck?.status).toBe('skipped');
+      expect(verification?.quint?.run?.status).toBe('skipped');
+      expect(providerResponse).toContain(expectedMessage);
+      expect(finalResponse).toContain(expectedMessage);
+
+      const quintCli = require.resolve('@informalsystems/quint/dist/src/cli.js');
+      const quintCalls = spawnedProcessCalls.filter(({ command, args }) => (
+        command === process.execPath && args.includes(quintCli)
+      ));
+      expect(quintCalls.map(({ args }) => args[1])).toEqual(['parse']);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it('delivers a real Quint parse diagnostic through /verify to the final response', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-verify-diagnostic-'));
+    const specification = [
+      '```quint',
+      'module verify {',
+      '  val note = true',
+      '  var enabled: bool',
+      '}',
+      '```',
+    ].join('\n');
+    const { session, observedVerifications } = createVerifySession(directory, specification);
+
+    try {
+      const result = await session.handleUserMessage({ text: '/verify' });
+
+      if (result.kind !== 'assistant_response') {
+        throw new Error(`Expected /verify to return an assistant response, received ${result.kind}`);
+      }
+      const finalResponse = result.content.slice(result.content.lastIndexOf('\n\n') + 2);
+      expect(finalResponse).toContain("[QNT101] Built-in name 'enabled' is redefined in module 'verify'");
+      expect(finalResponse).toContain('spec.qnt:3:3');
+      expect(observedVerifications[0]?.quint?.parse?.status).toBe('error');
+      expect(observedVerifications[0]?.quint?.typecheck?.status).toBe('skipped');
+      expect(observedVerifications[0]?.quint?.run?.status).toBe('skipped');
+
+      const quintCli = require.resolve('@informalsystems/quint/dist/src/cli.js');
+      const quintCalls = spawnedProcessCalls.filter(({ command, args }) => (
+        command === process.execPath && args.includes(quintCli)
+      ));
+      expect(quintCalls.map(({ args }) => args[1])).toEqual(['parse']);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it('delivers the violated invariant name through /verify to the final response', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-verify-run-diagnostic-'));
+    const specification = [
+      '```quint',
+      'module verify {',
+      '  var counter: int',
+      "  action init = counter' = 0",
+      "  action step = counter' = counter + 1",
+      '  val invSmall = q::debug("first", false)',
+      '  val invOther = q::debug("second", false)',
+      '  val invNonNegative = counter >= 0',
+      '}',
+      '```',
+    ].join('\n');
+    const { session, observedVerifications, providerResponses } = createVerifySession(directory, specification);
+
+    try {
+      const result = await session.handleUserMessage({ text: '/verify' });
+
+      if (result.kind !== 'assistant_response') {
+        throw new Error(`Expected /verify to return an assistant response, received ${result.kind}`);
+      }
+      const generatedSpecificationPrefix = `${specification}\n\n`;
+      expect(result.content.startsWith(generatedSpecificationPrefix)).toBe(true);
+      const finalResponse = result.content.slice(generatedSpecificationPrefix.length);
+      const providerResponse = providerResponses.at(-1) ?? '';
+      const runMessage = observedVerifications[0]?.quint?.run?.message ?? '';
+      expect(providerResponse).toContain('invSmall');
+      expect(providerResponse).toContain('invOther');
+      expect(providerResponse).not.toContain('invNonNegative');
+      expect(providerResponse).toContain('State 0');
+      expect(providerResponse).toContain('counter: 0');
+      expect(providerResponse.indexOf('invSmall')).toBeLessThan(providerResponse.indexOf('invOther'));
+      expect(providerResponse.indexOf('invOther')).toBeLessThan(providerResponse.indexOf('State 0'));
+      expect(finalResponse).toContain('invSmall');
+      expect(finalResponse).toContain('invOther');
+      expect(finalResponse).not.toContain('invNonNegative');
+      expect(finalResponse).toContain('State 0');
+      expect(finalResponse).toContain('counter: 0');
+      expect(finalResponse.indexOf('invSmall')).toBeLessThan(finalResponse.indexOf('State 0'));
+      expect(finalResponse.indexOf('invOther')).toBeLessThan(finalResponse.indexOf('State 0'));
+      expect(observedVerifications[0]?.quint?.parse?.status).toBe('passed');
+      expect(observedVerifications[0]?.quint?.typecheck?.status).toBe('passed');
+      expect(observedVerifications[0]?.quint?.run?.status).toBe('failed');
+      expect(runMessage).toContain('invSmall');
+      expect(runMessage).toContain('invOther');
+      expect(runMessage).toContain('An example execution:');
+      expect(runMessage).toContain('State 0');
+      expect(runMessage).toContain('counter: 0');
+      expect(runMessage.indexOf('invSmall')).toBeLessThan(runMessage.indexOf('State 0'));
+      expect(runMessage.indexOf('invOther')).toBeLessThan(runMessage.indexOf('State 0'));
+      expect(runMessage.indexOf('invSmall')).toBeLessThan(runMessage.indexOf('invOther'));
+      expect(observedVerifications[0]?.message).toContain('invSmall');
+      expect(observedVerifications[0]?.message).toContain('counter: 0');
+
+      const quintCli = require.resolve('@informalsystems/quint/dist/src/cli.js');
+      const quintRunCalls = spawnedProcessCalls.filter(({ command, args }) => (
+        command === process.execPath && args.includes(quintCli) && args[1] === 'run'
+      ));
+      expect(quintRunCalls).toHaveLength(1);
+      const runArgs = quintRunCalls[0]?.args ?? [];
+      expect(runArgs[runArgs.indexOf('--verbosity') + 1]).toBe('2');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it('delivers the fixed details and truncated trace through /verify to the final response', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-verify-run-overflow-'));
+    const specification = [
+      '```quint',
+      'module verify {',
+      '  var counter: int',
+      "  action init = counter' = 0",
+      "  action step = counter' = counter + 1",
+      '  val invSmall = counter >= 0',
+      '  val invOther = counter <= 10',
+      '}',
+      '```',
+    ].join('\n');
+    const trace = `An example execution:\n[State 0] { counter: 0 }\n${'x'.repeat(9_000)}`;
+    fakeQuintRun.mode = 'failed';
+    fakeQuintRun.stdout = `${trace}\n[violation] Found an issue\n  ❌ invSmall`;
+    fakeQuintRun.stderr = 'error: Invariant violated';
+    const { session, observedVerifications, providerResponses } = createVerifySession(directory, specification);
+
+    try {
+      const result = await session.handleUserMessage({ text: '/verify' });
+
+      if (result.kind !== 'assistant_response') {
+        throw new Error(`Expected /verify to return an assistant response, received ${result.kind}`);
+      }
+
+      const verification = observedVerifications[0];
+      const runMessage = verification?.quint?.run?.message ?? '';
+      const fixedMessage = '❌ invSmall\nerror: Invariant violated';
+      const traceBudget = 8_000 - fixedMessage.length - 1 - '\n[output truncated]'.length;
+      const expectedRunMessage = `${fixedMessage}\n${trace.slice(0, traceBudget)}\n[output truncated]`;
+      const generatedSpecificationPrefix = `${specification}\n\n`;
+      const finalResponse = result.content.slice(generatedSpecificationPrefix.length);
+      const providerResponse = providerResponses.at(-1) ?? '';
+
+      expect(result.content.startsWith(generatedSpecificationPrefix)).toBe(true);
+      expect(verification?.quint?.parse?.status).toBe('passed');
+      expect(verification?.quint?.typecheck?.status).toBe('passed');
+      expect(verification?.quint?.run?.status).toBe('failed');
+      expect(runMessage).toBe(expectedRunMessage);
+      expect(runMessage.length).toBe(8_000);
+      expect(providerResponse).toContain(expectedRunMessage);
+      expect(finalResponse).toContain(expectedRunMessage);
+      expect(verification?.message).toContain(expectedRunMessage);
+
+      const quintCli = require.resolve('@informalsystems/quint/dist/src/cli.js');
+      const quintRunCalls = spawnedProcessCalls.filter(({ command, args }) => (
+        command === process.execPath && args.includes(quintCli) && args[1] === 'run'
+      ));
+      expect(quintRunCalls).toHaveLength(1);
+      expect(quintRunCalls[0]?.args[quintRunCalls[0]?.args.indexOf('--verbosity') + 1]).toBe('2');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it('preserves a short counterexample through /verify when one invariant name exceeds the message budget', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-verify-long-invariant-'));
+    const invariantName = `inv${'x'.repeat(8_000)}`;
+    const specification = [
+      '```quint',
+      'module verify {',
+      '  var counter: int',
+      "  action init = counter' = 0",
+      "  action step = counter' = counter + 1",
+      `  val ${invariantName} = false`,
+      '}',
+      '```',
+    ].join('\n');
+    const { session, observedVerifications, providerResponses } = createVerifySession(directory, specification);
+
+    try {
+      const result = await session.handleUserMessage({ text: '/verify' });
+
+      if (result.kind !== 'assistant_response') {
+        throw new Error(`Expected /verify to return an assistant response, received ${result.kind}`);
+      }
+
+      const verification = observedVerifications[0];
+      const runMessage = verification?.quint?.run?.message ?? '';
+      const providerResponse = providerResponses.at(-1) ?? '';
+      const generatedSpecificationPrefix = `${specification}\n\n`;
+      const finalResponse = result.content.slice(generatedSpecificationPrefix.length);
+      expect(verification?.quint?.parse?.status).toBe('passed');
+      expect(verification?.quint?.typecheck?.status).toBe('passed');
+      expect(verification?.quint?.run?.status).toBe('failed');
+      expect(verification?.quint?.invariants).toContain(invariantName);
+      expect(result.content.startsWith(generatedSpecificationPrefix)).toBe(true);
+      expect(runMessage.length).toBeLessThanOrEqual(8_000);
+      expect(runMessage).toContain('❌ inv');
+      expect(runMessage).toContain('[invariant name truncated]');
+      expect(runMessage).not.toContain(invariantName);
+      expect(runMessage).toContain('An example execution:\n\n[State 0] { counter: 0 }');
+      expect(runMessage.indexOf('[invariant name truncated]')).toBeLessThan(runMessage.indexOf('State 0'));
+      expect(providerResponse).toContain('[invariant name truncated]');
+      expect(providerResponse).toContain('An example execution:\n\n[State 0] { counter: 0 }');
+      expect(finalResponse).toContain('[invariant name truncated]');
+      expect(finalResponse).toContain('An example execution:\n\n[State 0] { counter: 0 }');
+      expect(finalResponse).not.toContain(invariantName);
+      expect(verification?.message).toContain('[invariant name truncated]');
+
+      const quintCli = require.resolve('@informalsystems/quint/dist/src/cli.js');
+      const quintRunCalls = spawnedProcessCalls.filter(({ command, args }) => (
+        command === process.execPath && args.includes(quintCli) && args[1] === 'run'
+      ));
+      expect(quintRunCalls).toHaveLength(1);
+      const runArgs = quintRunCalls[0]?.args ?? [];
+      expect(runArgs).toContain(invariantName);
+      expect(runArgs[runArgs.indexOf('--backend') + 1]).toBe('typescript');
+      expect(runArgs[runArgs.indexOf('--verbosity') + 1]).toBe('2');
+      expect(runArgs[runArgs.indexOf('--max-samples') + 1]).toBe('1');
+      expect(runArgs[runArgs.indexOf('--max-steps') + 1]).toBe('20');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it('preserves the complete invariant name and available trace at message boundaries through /verify', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-verify-name-boundary-'));
+    const trace = 'An example execution:\n\n[State 0] { counter: 0 }';
+    const invariantNameLengths = [7_952, 7_953, 7_972, 7_973];
+
+    try {
+      for (const invariantNameLength of invariantNameLengths) {
+        const invariantName = `inv${'x'.repeat(invariantNameLength - 3)}`;
+        const runDirectory = join(directory, String(invariantNameLength));
+        mkdirSync(runDirectory);
+        const specification = [
+          '```quint',
+          'module verify {',
+          '  var counter: int',
+          "  action init = counter' = 0",
+          "  action step = counter' = counter + 1",
+          `  val ${invariantName} = false`,
+          '}',
+          '```',
+        ].join('\n');
+        const { session, observedVerifications, providerResponses } = createVerifySession(runDirectory, specification);
+        const result = await session.handleUserMessage({ text: '/verify' });
+
+        if (result.kind !== 'assistant_response') {
+          throw new Error(`Expected /verify to return an assistant response, received ${result.kind}`);
+        }
+
+        const verification = observedVerifications[0];
+        const runMessage = verification?.quint?.run?.message ?? '';
+        const providerResponse = providerResponses.at(-1) ?? '';
+        const generatedSpecificationPrefix = `${specification}\n\n`;
+        const finalResponse = result.content.slice(generatedSpecificationPrefix.length);
+        const retainedTraceLength = Math.max(0, Math.min(trace.length, 8_000 - invariantNameLength - 1));
+        const expectedMessage = invariantNameLength === 8_000
+          ? invariantName
+          : `${invariantName}\n${trace.slice(0, retainedTraceLength)}`;
+
+        expect(result.content.startsWith(generatedSpecificationPrefix)).toBe(true);
+        expect(verification?.quint?.parse?.status).toBe('passed');
+        expect(verification?.quint?.typecheck?.status).toBe('passed');
+        expect(verification?.quint?.run?.status).toBe('failed');
+        expect(verification?.quint?.invariants).toContain(invariantName);
+        expect(runMessage.length).toBeLessThanOrEqual(8_000);
+        expect(runMessage).toBe(expectedMessage);
+        expect(runMessage.slice(0, invariantNameLength)).toBe(invariantName);
+        expect(runMessage.slice(invariantNameLength + 1)).toBe(trace.slice(0, retainedTraceLength));
+        expect(verification?.message).toContain(expectedMessage);
+        expect(providerResponse).toContain(expectedMessage);
+        expect(finalResponse).toContain(expectedMessage);
+
+        const quintCli = require.resolve('@informalsystems/quint/dist/src/cli.js');
+        const quintRunCall = spawnedProcessCalls.find(({ command, args }) => (
+          command === process.execPath && args.includes(quintCli) && args[1] === 'run' && args.includes(invariantName)
+        ));
+        const runArgs = quintRunCall?.args ?? [];
+        expect(runArgs).toContain(invariantName);
+        expect(runArgs[runArgs.indexOf('--backend') + 1]).toBe('typescript');
+        expect(runArgs[runArgs.indexOf('--verbosity') + 1]).toBe('2');
+        expect(runArgs[runArgs.indexOf('--max-samples') + 1]).toBe('1');
+        expect(runArgs[runArgs.indexOf('--max-steps') + 1]).toBe('20');
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it('preserves the counterexample through /verify when the violated invariant list exceeds the message budget', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-verify-run-budget-'));
+
+    try {
+      const verifyWithInvariantCount = async (invariantCount: number) => {
+        const invariantNames = Array.from(
+          { length: invariantCount },
+          (_, index) => `invFailure${String(index).padStart(4, '0')}`,
+        );
+        const specification = [
+          '```quint',
+          'module verify {',
+          '  var counter: int',
+          "  action init = counter' = 0",
+          "  action step = counter' = counter + 1",
+          ...invariantNames.map((name) => `  val ${name} = counter < 0`),
+          '}',
+          '```',
+        ].join('\n');
+        const runDirectory = join(directory, String(invariantCount));
+        mkdirSync(runDirectory);
+        const { session, observedVerifications, providerResponses } = createVerifySession(runDirectory, specification);
+        const result = await session.handleUserMessage({ text: '/verify' });
+
+        if (result.kind !== 'assistant_response') {
+          throw new Error(`Expected /verify to return an assistant response, received ${result.kind}`);
+        }
+
+        const generatedSpecificationPrefix = `${specification}\n\n`;
+        expect(result.content.startsWith(generatedSpecificationPrefix)).toBe(true);
+        return {
+          verification: observedVerifications[0],
+          providerResponse: providerResponses.at(-1) ?? '',
+          finalResponse: result.content.slice(generatedSpecificationPrefix.length),
+        };
+      };
+
+      const standard = await verifyWithInvariantCount(2);
+      const large = await verifyWithInvariantCount(600);
+
+      for (const { verification, providerResponse, finalResponse } of [standard, large]) {
+        const runMessage = verification?.quint?.run?.message ?? '';
+        const firstViolationName = /❌ invFailure\d{4}/u.exec(runMessage)?.[0];
+        if (firstViolationName === undefined) {
+          throw new Error('The Quint run failure did not include a violated invariant name');
+        }
+
+        expect(verification?.quint?.parse?.status).toBe('passed');
+        expect(verification?.quint?.typecheck?.status).toBe('passed');
+        expect(verification?.quint?.run?.status).toBe('failed');
+        expect(runMessage.length).toBeLessThanOrEqual(8_000);
+        expect(runMessage).toContain(firstViolationName);
+        expect(runMessage).toContain('An example execution:');
+        expect(runMessage).toContain('State 0');
+        expect(runMessage).toContain('counter: 0');
+        expect(runMessage.indexOf(firstViolationName)).toBeLessThan(runMessage.indexOf('State 0'));
+        expect(providerResponse).toContain(firstViolationName);
+        expect(providerResponse).toContain('State 0');
+        expect(finalResponse).toContain(firstViolationName);
+        expect(finalResponse).toContain('State 0');
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it('reports the violated invariant from a real Quint simulation failure', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'takt-formal-spec-run-diagnostic-'));
+    const response = [
+      '```quint',
+      'module verify {',
+      '  var counter: int',
+      "  action init = counter' = 0",
+      "  action step = counter' = counter + 1",
+      '  val invSmall = false',
+      '  val invNonNegative = counter >= 0',
+      '}',
+      '```',
+    ].join('\n');
+
+    try {
+      const result = await runFormalSpecVerification(response, directory, { modelCheckTimeoutSeconds: 300 });
+      const quintCli = require.resolve('@informalsystems/quint/dist/src/cli.js');
+      const runCall = spawnedProcessCalls.find(({ command, args }) => (
+        command === process.execPath && args.includes(quintCli) && args[1] === 'run'
+      ));
+
+      expect(result.quint.parse?.status).toBe('passed');
+      expect(result.quint.typecheck?.status).toBe('passed');
+      expect(result.quint.run?.status).toBe('failed');
+      expect(result.verdict).toBe('failed');
+      expect(result.message).toContain('invSmall');
+      expect(result.message).not.toContain('invNonNegative');
+      expect(runCall).toBeDefined();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('runs Quint basic verification and reports Java-dependent stages as skipped when Java is unavailable', async () => {

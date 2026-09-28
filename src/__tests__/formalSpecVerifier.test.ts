@@ -40,6 +40,19 @@ const { failSpecsDirectoryCreation } = vi.hoisted(() => ({
   failSpecsDirectoryCreation: { enabled: false },
 }));
 
+const { failParseJsonRead } = vi.hoisted(() => ({
+  failParseJsonRead: { enabled: false },
+}));
+
+const { parseJsonReadAttempts } = vi.hoisted(() => ({
+  parseJsonReadAttempts: { count: 0 },
+}));
+
+const { parseJsonReadMetrics, parseJsonReadChunkSize } = vi.hoisted(() => ({
+  parseJsonReadMetrics: { reads: 0, maxRequestedBytes: 0, closes: 0 },
+  parseJsonReadChunkSize: { value: undefined as number | undefined },
+}));
+
 const { failVerifyRunRemoval, processBoundaryControls } = vi.hoisted(() => ({
   failVerifyRunRemoval: { enabled: false },
   processBoundaryControls: { throwOnSpawn: false },
@@ -70,6 +83,38 @@ vi.mock('node:fs', async () => {
   };
 });
 
+vi.mock('node:fs/promises', async () => {
+  const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const isParseJson = String(args[0]).endsWith('parse.json');
+      if (isParseJson) {
+        parseJsonReadAttempts.count += 1;
+      }
+      if (failParseJsonRead.enabled && isParseJson) {
+        throw new Error('parse JSON read failed');
+      }
+      const file = await actual.open(...args);
+      if (!isParseJson) return file;
+      return {
+        read: async (buffer: Buffer, offset: number, length: number, position: number | null) => {
+          parseJsonReadMetrics.reads += 1;
+          parseJsonReadMetrics.maxRequestedBytes = Math.max(parseJsonReadMetrics.maxRequestedBytes, length);
+          const chunkLength = parseJsonReadChunkSize.value === undefined
+            ? length
+            : Math.min(length, parseJsonReadChunkSize.value);
+          return file.read(buffer, offset, chunkLength, position);
+        },
+        close: async () => {
+          parseJsonReadMetrics.closes += 1;
+          await file.close();
+        },
+      } as Awaited<ReturnType<typeof actual.open>>;
+    },
+  };
+});
+
 vi.mock('../shared/utils/spawn.js', () => ({
   spawnManagedProcess: (...args: unknown[]) => mockSpawnManagedProcess(...args),
 }));
@@ -88,6 +133,7 @@ interface MockProcessResponse {
   readonly code?: number | null;
   readonly signal?: NodeJS.Signals | null;
   readonly stdout?: string;
+  readonly stdoutChunks?: readonly string[];
   readonly stderr?: string;
   readonly error?: Error;
   readonly hang?: boolean;
@@ -116,6 +162,10 @@ let parseResult: unknown = {
     ],
   }],
 };
+type ParseOutputOverride =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'raw'; readonly content: string };
+let parseOutputOverride: ParseOutputOverride | undefined;
 
 const EXPECTED_ALLOY_JAR_SHA256 = '6037cbeee0e8423c1c468447ed10f5fcf2f2743a2ffc39cb1c81f2905c0fdb9d';
 
@@ -142,13 +192,20 @@ function mockProcessBoundary(): void {
     const parseOutputIndex = args.indexOf('--out');
     if (parseOutputIndex >= 0) {
       const parseOutputPath = args[parseOutputIndex + 1];
-      if (parseOutputPath !== undefined) {
-        writeFileSync(parseOutputPath, JSON.stringify(parseResult));
+      if (parseOutputPath !== undefined && parseOutputOverride?.kind !== 'missing') {
+        const content = parseOutputOverride?.kind === 'raw'
+          ? parseOutputOverride.content
+          : JSON.stringify(parseResult);
+        writeFileSync(parseOutputPath, content);
       }
     }
     const wait = async () => {
       await response.beforeExit?.();
-      if (response.stdout !== undefined) stdout.emit('data', response.stdout);
+      if (response.stdoutChunks !== undefined) {
+        for (const chunk of response.stdoutChunks) stdout.emit('data', chunk);
+      } else if (response.stdout !== undefined) {
+        stdout.emit('data', response.stdout);
+      }
       if (response.stderr !== undefined) stderr.emit('data', response.stderr);
       if (response.hang) {
         await new Promise<never>((_resolve, reject) => {
@@ -211,7 +268,14 @@ beforeEach(() => {
       ],
     }],
   };
+  parseOutputOverride = undefined;
   failSpecsDirectoryCreation.enabled = false;
+  failParseJsonRead.enabled = false;
+  parseJsonReadAttempts.count = 0;
+  parseJsonReadMetrics.reads = 0;
+  parseJsonReadMetrics.maxRequestedBytes = 0;
+  parseJsonReadMetrics.closes = 0;
+  parseJsonReadChunkSize.value = undefined;
   failVerifyRunRemoval.enabled = false;
   processBoundaryControls.throwOnSpawn = false;
   alloyJarDigestOverride.value = undefined;
@@ -232,6 +296,34 @@ afterEach(() => {
 });
 
 describe('runFormalSpecVerification', () => {
+  const largeInvariantNames = Array.from(
+    { length: 600 },
+    (_, index) => `invFailure${String(index).padStart(4, '0')}`,
+  );
+
+  function setLargeInvariantParseResult(): void {
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          ...largeInvariantNames.map((name) => ({ kind: 'def', name, qualifier: 'val' })),
+        ],
+      }],
+    };
+  }
+
+  function largeInvariantOutput(): string {
+    return [
+      'An example execution:',
+      'State 0',
+      '{ counter: 0 }',
+      '[violation] Found an issue',
+      ...largeInvariantNames.map((name) => `  ❌ ${name}`),
+    ].join('\n');
+  }
+
   it('should fail explicitly without invoking verification when the response has no target blocks', async () => {
     const result = await runFormalSpecVerification('No formal specification was generated.', '/repo', { modelCheckTimeoutSeconds: 300 });
 
@@ -248,6 +340,900 @@ describe('runFormalSpecVerification', () => {
         message: 'No formal specification blocks found.',
       },
     });
+  });
+
+  it('should include every Quint parse diagnostic and source position after a parse failure', async () => {
+    const directory = createTestDirectory();
+    parseResult = {
+      errors: [
+        {
+          explanation: '[QNT101] First parse diagnostic',
+          locs: [
+            { source: '/tmp/spec.qnt', start: { line: 2, col: 2 } },
+            { source: '/tmp/shared.qnt', start: { line: 4, col: 6 } },
+          ],
+        },
+        {
+          explanation: '[QNT202] Second parse diagnostic',
+          locs: [{ source: '/tmp/spec.qnt', start: { line: 7, col: 3 } }],
+        },
+      ],
+    };
+    processResponses.push({ code: 1 });
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule invalid {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.parse?.message ?? '';
+
+      expect(result.quint.parse?.status).toBe('error');
+      expect(message).toContain('[QNT101] First parse diagnostic');
+      expect(message).toContain('[QNT202] Second parse diagnostic');
+      expect(message.indexOf('[QNT101] First parse diagnostic'))
+        .toBeLessThan(message.indexOf('[QNT202] Second parse diagnostic'));
+      expect(message).toContain('spec.qnt:3:3');
+      expect(message).toContain('shared.qnt:5:7');
+      expect(message).toContain('spec.qnt:8:4');
+      expect(result.quint.typecheck?.status).toBe('skipped');
+      expect(result.quint.run?.status).toBe('skipped');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      name: 'missing parse JSON with no process output',
+      parseOutput: { kind: 'missing' as const },
+      response: { code: 1 },
+      expectedMessage: 'Process exited with status 1',
+    },
+    {
+      name: 'malformed parse JSON with both process streams',
+      parseOutput: { kind: 'raw' as const, content: '{"errors":[' },
+      response: { code: 1, stderr: 'parse stderr', stdout: 'parse stdout' },
+      expectedMessage: 'parse stderr\nparse stdout',
+      assertParseJsonReadAttempt: true,
+    },
+    {
+      name: 'display-budget diagnostics followed by malformed JSON data',
+      parseOutput: {
+        kind: 'raw' as const,
+        content: `${JSON.stringify({
+          errors: [{
+            locs: [{ source: '/tmp/spec.qnt', start: { line: 2, col: 2 } }],
+            explanation: `[QNT101] ${'x'.repeat(9_000)}`,
+          }],
+        })}x`,
+      },
+      response: { code: 1, stderr: 'parse failed' },
+      expectedMessage: 'parse failed',
+      assertParseJsonReadAttempt: true,
+    },
+    {
+      name: 'unreadable parse JSON with process output',
+      failParseJsonRead: true,
+      response: { code: 1, stderr: 'parse stderr' },
+      expectedMessage: 'parse stderr',
+      assertParseJsonReadAttempt: true,
+    },
+    {
+      name: 'an empty root errors array with nested and quoted errors',
+      parseResult: {
+        errors: [],
+        modules: [{ errors: [{ explanation: 'nested fake diagnostic' }] }],
+        note: '"errors":[{"explanation":"quoted fake diagnostic"}]',
+      },
+      response: { code: 1, stderr: 'parse failed' },
+      expectedMessage: 'parse failed',
+      assertParseJsonReadAttempt: true,
+    },
+    {
+      name: 'a root errors field with the wrong type',
+      parseResult: { errors: 'not an array' },
+      response: { code: 1, stderr: 'parse failed' },
+      expectedMessage: 'parse failed',
+      assertParseJsonReadAttempt: true,
+    },
+    {
+      name: 'a malformed root diagnostic after a long diagnostic',
+      parseResult: {
+        errors: [
+          {
+            explanation: `[QNT999] ${'x'.repeat(9_000)}`,
+            locs: [{ source: '/tmp/spec.qnt', start: { line: 2, col: 2 } }],
+          },
+          { explanation: '[QNT101] Invalid location', locs: [{ source: '/tmp/spec.qnt', start: { line: -1, col: 2 } }] },
+        ],
+      },
+      response: { code: 1, stderr: 'parse failed' },
+      expectedMessage: 'parse failed',
+      assertParseJsonReadAttempt: true,
+    },
+  ])('should use the process failure message for $name', async ({ parseOutput, parseResult: output, failParseJsonRead: readFailure, response, expectedMessage, assertParseJsonReadAttempt }) => {
+    const directory = createTestDirectory();
+    if (parseOutput !== undefined) {
+      parseOutputOverride = parseOutput;
+    }
+    if (readFailure === true) {
+      failParseJsonRead.enabled = true;
+    }
+    if (output !== undefined) {
+      parseResult = output;
+    }
+    processResponses.push(response);
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule invalid {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+
+      expect(result.quint.parse).toEqual({ status: 'error', message: expectedMessage });
+      expect(result.quint.typecheck?.status).toBe('skipped');
+      expect(result.quint.run?.status).toBe('skipped');
+      expect(spawnedProcesses.map(({ args }) => args[1])).toEqual(['parse']);
+      if (assertParseJsonReadAttempt === true) {
+        expect(parseJsonReadAttempts.count).toBeGreaterThan(0);
+        expect(parseJsonReadMetrics.closes).toBe(readFailure === true ? 0 : 1);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should parse split UTF-8 and escaped JSON input with fields in any order', async () => {
+    const directory = createTestDirectory();
+    parseJsonReadChunkSize.value = 1;
+    parseResult = {
+      errors: [{
+        locs: [{ source: '/tmp/spec.qnt', start: { col: 12, line: 20 } }],
+        explanation: '[QNT101] 雪\\n"invalid"',
+      }],
+    };
+    processResponses.push({ code: 1, stderr: 'parse failed' });
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule invalid {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+
+      expect(result.quint.parse?.status).toBe('error');
+      expect(result.quint.parse?.message).toBe('spec.qnt:21:13: [QNT101] 雪\\n"invalid"');
+      expect(parseJsonReadMetrics.reads).toBeGreaterThan(1);
+      expect(parseJsonReadMetrics.closes).toBe(1);
+      expect(result.quint.typecheck?.status).toBe('skipped');
+      expect(result.quint.run?.status).toBe('skipped');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should stream large unrelated values and long source paths while retaining only bounded diagnostics', async () => {
+    const directory = createTestDirectory();
+    const locations = Array.from({ length: 1_500 }, (_, index) => ({
+      source: index === 0 ? `/tmp/${'x'.repeat(100_000)}/spec.qnt` : `/tmp/spec-${index}.qnt`,
+      start: { line: index, col: index },
+    }));
+    parseResult = {
+      unrelated: { note: 'x'.repeat(150_000) },
+      errors: [{
+        locs: locations,
+        explanation: '[QNT101] bounded diagnostic',
+      }],
+    };
+    processResponses.push({ code: 1 });
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule invalid {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.parse?.message ?? '';
+
+      expect(result.quint.parse?.status).toBe('error');
+      expect(message).toMatch(/^spec\.qnt:1:1, spec-1\.qnt:2:2, spec-2\.qnt:3:3/u);
+      expect(message).toContain('[QNT101] bounded diagnostic');
+      expect(message.length).toBeLessThanOrEqual(8_000);
+      expect(message.endsWith('他 0 件の診断を省略')).toBe(true);
+      expect(parseJsonReadMetrics.maxRequestedBytes).toBe(64 * 1024);
+      expect(parseJsonReadMetrics.reads).toBeGreaterThan(1);
+      expect(parseJsonReadMetrics.closes).toBe(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should keep the first long Quint parse diagnostic and report omitted diagnostics', async () => {
+    const directory = createTestDirectory();
+    parseResult = {
+      errors: [
+        {
+          explanation: `[QNT999] ${'x'.repeat(9_000)}`,
+          locs: [{ source: '/tmp/spec.qnt', start: { line: 2, col: 2 } }],
+        },
+        {
+          explanation: '[QNT101] Second parse diagnostic',
+          locs: [{ source: '/tmp/spec.qnt', start: { line: 4, col: 2 } }],
+        },
+        {
+          explanation: '[QNT202] Third parse diagnostic',
+          locs: [{ source: '/tmp/spec.qnt', start: { line: 6, col: 2 } }],
+        },
+      ],
+    };
+    processResponses.push({ code: 1 });
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule invalid {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.parse?.message ?? '';
+
+      expect(result.quint.parse?.status).toBe('error');
+      expect(message.startsWith('spec.qnt:3:3: [QNT999] ')).toBe(true);
+      expect(message.length).toBeLessThanOrEqual(8_000);
+      expect(message).toContain('x'.repeat(64));
+      expect(message).toContain('[output truncated]');
+      expect(message.endsWith('他 2 件の診断を省略')).toBe(true);
+      expect(message).not.toContain('[QNT101] Second parse diagnostic');
+      expect(message).not.toContain('[QNT202] Third parse diagnostic');
+      expect(result.quint.typecheck?.status).toBe('skipped');
+      expect(result.quint.run?.status).toBe('skipped');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should keep complete parse diagnostics in order when their combined length exceeds the limit', async () => {
+    const directory = createTestDirectory();
+    const firstLocationPrefix = 'spec.qnt:3:3: ';
+    const secondLocationPrefix = 'spec.qnt:5:3: ';
+    const thirdLocationPrefix = 'spec.qnt:7:3: ';
+    const firstExplanation = `[QNT101] ${'a'.repeat(3_900 - firstLocationPrefix.length - '[QNT101] '.length)}`;
+    const secondExplanation = `[QNT202] ${'b'.repeat(3_900 - secondLocationPrefix.length - '[QNT202] '.length)}`;
+    const thirdExplanation = `[QNT303] ${'c'.repeat(300 - thirdLocationPrefix.length - '[QNT303] '.length)}`;
+    const firstDiagnostic = `${firstLocationPrefix}${firstExplanation}`;
+    const secondDiagnostic = `${secondLocationPrefix}${secondExplanation}`;
+    const thirdDiagnostic = `${thirdLocationPrefix}${thirdExplanation}`;
+    parseResult = {
+      errors: [
+        {
+          explanation: firstExplanation,
+          locs: [{ source: '/tmp/spec.qnt', start: { line: 2, col: 2 } }],
+        },
+        {
+          explanation: secondExplanation,
+          locs: [{ source: '/tmp/spec.qnt', start: { line: 4, col: 2 } }],
+        },
+        {
+          explanation: thirdExplanation,
+          locs: [{ source: '/tmp/spec.qnt', start: { line: 6, col: 2 } }],
+        },
+      ],
+    };
+    processResponses.push({ code: 1 });
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule invalid {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.parse?.message ?? '';
+
+      expect(firstDiagnostic).toHaveLength(3_900);
+      expect(secondDiagnostic).toHaveLength(3_900);
+      expect(thirdDiagnostic).toHaveLength(300);
+      expect(message).toBe(`${firstDiagnostic}\n${secondDiagnostic}\n他 1 件の診断を省略`);
+      expect(message.length).toBeLessThanOrEqual(8_000);
+      expect(result.quint.parse?.status).toBe('error');
+      expect(result.quint.typecheck?.status).toBe('skipped');
+      expect(result.quint.run?.status).toBe('skipped');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([8_000, 8_001])('should keep the source position at a diagnostic body length of %i characters', async (bodyLength) => {
+    const directory = createTestDirectory();
+    const locationPrefix = 'spec.qnt:3:3: ';
+    const diagnosticPrefix = '[QNT999] ';
+    parseResult = {
+      errors: [{
+        explanation: `${diagnosticPrefix}${'x'.repeat(bodyLength - locationPrefix.length - diagnosticPrefix.length)}`,
+        locs: [{ source: '/tmp/spec.qnt', start: { line: 2, col: 2 } }],
+      }],
+    };
+    processResponses.push({ code: 1 });
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule invalid {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.parse?.message ?? '';
+
+      expect(result.quint.parse?.status).toBe('error');
+      expect(message.startsWith(`${locationPrefix}${diagnosticPrefix}`)).toBe(true);
+      if (bodyLength === 8_000) {
+        expect(message).toHaveLength(8_000);
+        expect(message).not.toContain('[output truncated]');
+      } else {
+        expect(message.length).toBeLessThanOrEqual(8_000);
+        expect(message).toContain('[output truncated]');
+        expect(message.endsWith('他 0 件の診断を省略')).toBe(true);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should name only the violated invariant in a failed Quint run message', async () => {
+    const directory = createTestDirectory();
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: 'invSmall', qualifier: 'val' },
+          { kind: 'def', name: 'invNonNegative', qualifier: 'val' },
+        ],
+      }],
+    };
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr: 'error: Invariant violated',
+        stdout: '\u001b[2mAn example execution:\u001b[0m\nState 0\n{ counter: 0 }\n\u001b[31m[violation]\u001b[0m Found an issue\n\u001b[31m  ❌ invSmall\u001b[0m\n',
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const runCall = spawnedProcesses.find(({ args }) => args.includes('run'));
+      const verbosityIndex = runCall?.args.indexOf('--verbosity') ?? -1;
+      const verbosity = Number(runCall?.args[verbosityIndex + 1]);
+      const runMessage = result.quint.run?.message ?? '';
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(result.message).toContain('invSmall');
+      expect(result.message).not.toContain('invNonNegative');
+      expect(runMessage.indexOf('❌ invSmall')).toBeLessThan(runMessage.indexOf('State 0'));
+      expect(verbosity).toBe(2);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should retain a short counterexample trace when the violated invariant names exceed the message budget', async () => {
+    const directory = createTestDirectory();
+    setLargeInvariantParseResult();
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr: 'error: Invariant violated',
+        stdout: largeInvariantOutput(),
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.run?.message ?? '';
+      const firstViolationName = '❌ invFailure0000';
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(message.length).toBeLessThanOrEqual(8_000);
+      expect(message).toContain(firstViolationName);
+      expect(message).toContain('An example execution:\nState 0\n{ counter: 0 }');
+      expect(message.indexOf(firstViolationName)).toBeLessThan(message.indexOf('State 0'));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should not prefix violated invariant names from stdout for a general run error', async () => {
+    const directory = createTestDirectory();
+    setLargeInvariantParseResult();
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr: 'error: Runtime error',
+        stdout: largeInvariantOutput(),
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.run?.message ?? '';
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(message.startsWith('error: Runtime error\nAn example execution:')).toBe(true);
+      expect(message.indexOf('State 0')).toBeLessThan(message.indexOf('❌ invFailure0000'));
+      expect(message).toContain('State 0');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should parse a violation header and name split across stdout chunks', async () => {
+    const directory = createTestDirectory();
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: 'invSmall', qualifier: 'val' },
+          { kind: 'def', name: 'invNonNegative', qualifier: 'val' },
+        ],
+      }],
+    };
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr: 'error: Invariant violated',
+        stdoutChunks: [
+          'State 0\r\n{ counter: 0 }\r\n[viol',
+          'ation] Found an issue\r\n  \u001b[3',
+          '1m❌ invSm',
+          'all\u001b[0m',
+        ],
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.run?.message ?? '';
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(message.indexOf('❌ invSmall')).toBeLessThan(message.indexOf('State 0'));
+      expect(message).toContain('{ counter: 0 }');
+      expect(message).not.toContain('invNonNegative');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should collect violated names across debug lines and stop at the Quint result terminator', async () => {
+    const directory = createTestDirectory();
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: 'invSmall', qualifier: 'val' },
+          { kind: 'def', name: 'invOther', qualifier: 'val' },
+          { kind: 'def', name: 'invNonNegative', qualifier: 'val' },
+        ],
+      }],
+    };
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr: 'error: Invariant violated',
+        stdoutChunks: [
+          'State 0\r\n{ counter: 0 }\r\n[violation] Found an issue\r\n> "first" false\r\n  ❌ invUnknown\r\n  ❌ invSmall\r\n',
+          `> "second" false\r\n${'long debug output '.repeat(100)}\r\n  ❌ invSmall\r\n  ❌ invOther\r\nUse --verbosity=3 to show `,
+          'executions.\r\n  ❌ invNonNegative\r\n',
+        ],
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.run?.message ?? '';
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(message.startsWith('❌ invSmall\n❌ invOther\nerror: Invariant violated\n')).toBe(true);
+      expect(message.indexOf('❌ invSmall')).toBeLessThan(message.indexOf('❌ invOther'));
+      expect(message.indexOf('❌ invOther')).toBeLessThan(message.indexOf('State 0'));
+      expect(message.slice(0, message.indexOf('error: Invariant violated'))).toBe('❌ invSmall\n❌ invOther\n');
+      expect(message).toContain('long debug output');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should detect a violated invariant after the output limit before formatting the run message', async () => {
+    const directory = createTestDirectory();
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: 'invSmall', qualifier: 'val' },
+          { kind: 'def', name: 'invNonNegative', qualifier: 'val' },
+        ],
+      }],
+    };
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr: 'error: Invariant violated',
+        stdout: `An example execution:\nState 0\n{ counter: 0 }\n${'x'.repeat(9_000)}\n[violation] Found an issue\n  ❌ invSmall\n`,
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.run?.message ?? '';
+      const trace = `An example execution:\nState 0\n{ counter: 0 }\n${'x'.repeat(9_000)}`;
+      const fixedMessage = '❌ invSmall\nerror: Invariant violated';
+      const traceBudget = 8_000 - fixedMessage.length - 1 - '\n[output truncated]'.length;
+      const expectedMessage = `${fixedMessage}\n${trace.slice(0, traceBudget)}\n[output truncated]`;
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(message).toBe(expectedMessage);
+      expect(message).not.toContain('invNonNegative');
+      expect(message).toHaveLength(8_000);
+      expect(message).toContain('error: Invariant violated');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { label: 'confirmed invariant violation', stderr: 'error: Invariant violated', includesViolationName: true },
+    { label: 'general runtime error', stderr: 'error: Runtime error', includesViolationName: false },
+  ])('should retain the violation name after stdout capture overflow only for a $label', async ({ stderr, includesViolationName }) => {
+    const directory = createTestDirectory();
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: 'invSmall', qualifier: 'val' },
+          { kind: 'def', name: 'invNonNegative', qualifier: 'val' },
+        ],
+      }],
+    };
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr,
+        stdoutChunks: [
+          'State 0\n{ counter: 0 }\n',
+          'x'.repeat(1_048_577),
+          '\n[violation] Found an issue\n  ❌ invSmall\n',
+        ],
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.run?.message ?? '';
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(message).toContain('State 0');
+      expect(message).toContain('{ counter: 0 }');
+      expect(message.length).toBeLessThanOrEqual(8_000);
+      if (includesViolationName) {
+        expect(message.indexOf('❌ invSmall')).toBeLessThan(message.indexOf('State 0'));
+        expect(message).not.toContain('invNonNegative');
+        expect(message).toHaveLength(8_000);
+      } else {
+        expect(message).toContain('error: Runtime error');
+        expect(message).not.toContain('invSmall');
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should abbreviate the single invariant fallback name without changing the run argument', async () => {
+    const directory = createTestDirectory();
+    const invariantName = `inv${'x'.repeat(8_000)}`;
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: invariantName, qualifier: 'val' },
+        ],
+      }],
+    };
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr: 'error: Invariant violated\n',
+        stdout: '[violation] Found an issue\n',
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const runMessage = result.quint.run?.message ?? '';
+      const runCall = spawnedProcesses.find(({ args }) => args.includes('run'));
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(runMessage.startsWith('❌ inv')).toBe(true);
+      expect(runMessage).toContain('[invariant name truncated]');
+      expect(runMessage).not.toContain(invariantName);
+      expect(runMessage).toContain('error: Invariant violated');
+      expect(runMessage.length).toBeLessThanOrEqual(8_000);
+      expect(runMessage).not.toContain('[output truncated]');
+      expect(runMessage).not.toContain('[violation] Found an issue');
+      expect(result.quint.invariants).toEqual([invariantName]);
+      expect(runCall?.args).toContain(invariantName);
+      expect(result.message).toContain('[invariant name truncated]');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should preserve the short trace when a parsed invariant name is abbreviated', async () => {
+    const directory = createTestDirectory();
+    const invariantName = `inv${'x'.repeat(8_000)}`;
+    const trace = 'An example execution:\nState 0\n{ counter: 0 }';
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: invariantName, qualifier: 'val' },
+        ],
+      }],
+    };
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr: 'error: Invariant violated',
+        stdout: `${trace}\n[violation] Found an issue\n  ❌ ${invariantName}\n`,
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.run?.message ?? '';
+      const runCall = spawnedProcesses.find(({ args }) => args.includes('run'));
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(message.length).toBeLessThanOrEqual(8_000);
+      expect(message.startsWith('❌ inv')).toBe(true);
+      expect(message).toContain('[invariant name truncated]');
+      expect(message).not.toContain(invariantName);
+      expect(message).toContain(trace);
+      expect(message.indexOf('[invariant name truncated]')).toBeLessThan(message.indexOf('State 0'));
+      expect(result.quint.invariants).toEqual([invariantName]);
+      expect(runCall?.args).toContain(invariantName);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should preserve the complete invariant name and available trace at message boundaries', async () => {
+    const trace = 'An example execution:\nState 0\n{ counter: 0 }';
+    const boundaryNameLengths = [7_952, 7_953, 7_972, 7_973];
+
+    const verifyWithName = async (invariantName: string, stdout: string) => {
+      const directory = createTestDirectory();
+      parseResult = {
+        modules: [{
+          name: 'verify',
+          declarations: [
+            { kind: 'def', name: 'init', qualifier: 'action' },
+            { kind: 'def', name: 'step', qualifier: 'action' },
+            { kind: 'def', name: invariantName, qualifier: 'val' },
+          ],
+        }],
+      };
+      processResponses.push(
+        { code: 0 },
+        { code: 0 },
+        {
+          code: 1,
+          stderr: 'error: Invariant violated',
+          stdout,
+        },
+      );
+
+      try {
+        const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+        return {
+          status: result.quint.run?.status,
+          message: result.quint.run?.message ?? '',
+        };
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    };
+
+    for (const invariantNameLength of boundaryNameLengths) {
+      const invariantName = `inv${'x'.repeat(invariantNameLength - 3)}`;
+      const { status, message } = await verifyWithName(
+        invariantName,
+        `${trace}\n[violation] Found an issue\n  ❌ ${invariantName}\n`,
+      );
+      const retainedTraceLength = Math.max(0, Math.min(trace.length, 8_000 - invariantNameLength - 1));
+      const expectedMessage = invariantNameLength === 8_000
+        ? invariantName
+        : `${invariantName}\n${trace.slice(0, retainedTraceLength)}`;
+
+      expect(status).toBe('failed');
+      expect(message.length).toBeLessThanOrEqual(8_000);
+      expect(message).toBe(expectedMessage);
+      expect(message.slice(0, invariantNameLength)).toBe(invariantName);
+      expect(message.slice(invariantNameLength + 1)).toBe(trace.slice(0, retainedTraceLength));
+    }
+
+    const invariantName = `inv${'x'.repeat(7_997)}`;
+    const { status, message } = await verifyWithName(invariantName, '');
+
+    expect(status).toBe('failed');
+    expect(message).toBe(invariantName);
+  });
+
+  it.each([
+    {
+      label: 'a name beyond the message budget',
+      invariantName: `inv${'x'.repeat(8_000)}`,
+      stdout: '',
+    },
+    {
+      label: 'a name beyond the previous truncation-note boundary',
+      invariantName: `inv${'x'.repeat(7_950)}`,
+      stdout: '',
+    },
+    {
+      label: 'a name at the 7,973-character boundary present in stdout',
+      invariantName: `inv${'x'.repeat(7_970)}`,
+      stdout: `An example execution:\nState 0\n{ counter: 0 }\n[violation] Found an issue\n  ❌ inv${'x'.repeat(7_970)}`,
+    },
+  ])('should use general formatting for a run error mentioning invariant violation ($label)', async ({ invariantName, stdout }) => {
+    const directory = createTestDirectory();
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: invariantName, qualifier: 'val' },
+        ],
+      }],
+    };
+    const stderr = 'Runtime detail: error: Invariant violated\nerror: Runtime error\n';
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      { code: 1, stderr, stdout },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const runMessage = result.quint.run?.message ?? '';
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(runMessage.startsWith(stderr.trim())).toBe(true);
+      expect(runMessage.startsWith(`❌ ${invariantName}`)).toBe(false);
+      expect(runMessage).not.toContain('[invariant name truncated]');
+      if (stdout.length === 0) {
+        expect(runMessage).not.toContain(invariantName);
+      } else {
+        expect(runMessage).toContain('An example execution:');
+        expect(runMessage).not.toContain(invariantName);
+      }
+      expect(result.message).toContain('Runtime detail: error: Invariant violated');
+      expect(result.message).toContain('error: Runtime error');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should not treat a stdout match as the Quint invariant violation diagnostic', async () => {
+    const directory = createTestDirectory();
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: 'invSmall', qualifier: 'val' },
+          { kind: 'def', name: 'invNonNegative', qualifier: 'val' },
+        ],
+      }],
+    };
+    const stderr = 'error: Runtime error\n';
+    const stdout = 'An example execution:\nState 0\n{ counter: 0 }\n[violation] Found an issue\n  ❌ invSmall\n';
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      { code: 1, stderr, stdout },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const runMessage = result.quint.run?.message ?? '';
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(runMessage).toBe(`${stderr.trim()}\n${stdout.trim()}`);
+      expect(runMessage.startsWith('❌')).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('should not add an invariant name when the run has no invariant targets', async () => {
+    const directory = createTestDirectory();
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+        ],
+      }],
+    };
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      { code: 1, stderr: 'error: Invariant violated\n' },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(result.quint.run?.message).toBe('error: Invariant violated');
+      expect(result.quint.run?.message).not.toContain('❌');
+      expect(result.quint.run?.message).not.toContain('[invariant name truncated]');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([8_000, 8_001])('should cut only the trace tail when the complete name and trace reach %i characters', async (bodyLength) => {
+    const directory = createTestDirectory();
+    parseResult = {
+      modules: [{
+        name: 'verify',
+        declarations: [
+          { kind: 'def', name: 'init', qualifier: 'action' },
+          { kind: 'def', name: 'step', qualifier: 'action' },
+          { kind: 'def', name: 'invSmall', qualifier: 'val' },
+        ],
+    }],
+    };
+    const invariantName = 'invSmall';
+    const fixedMessage = `❌ ${invariantName}\nerror: Invariant violated`;
+    const tracePrefix = 'An example execution:\n[State 0] { counter: 0 }\n';
+    const traceLength = bodyLength - fixedMessage.length - 1;
+    const trace = `${tracePrefix}${'x'.repeat(traceLength - tracePrefix.length)}`;
+    const retainedTraceBudget = 8_000 - fixedMessage.length - 1 - '\n[output truncated]'.length;
+    const expectedTrace = bodyLength === 8_000 ? trace : trace.slice(0, retainedTraceBudget);
+    const expectedSuffix = bodyLength === 8_000 ? '' : '\n[output truncated]';
+    processResponses.push(
+      { code: 0 },
+      { code: 0 },
+      {
+        code: 1,
+        stderr: 'error: Invariant violated\n',
+        stdout: trace,
+      },
+    );
+
+    try {
+      const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
+      const message = result.quint.run?.message ?? '';
+
+      expect(result.quint.run?.status).toBe('failed');
+      expect(message).toBe(`${fixedMessage}\n${expectedTrace}${expectedSuffix}`);
+      expect(message).toContain('An example execution:');
+      expect(message).toContain('[State 0] { counter: 0 }');
+      expect(message).toContain('error: Invariant violated');
+      expect(message).toHaveLength(8_000);
+      expect(message.startsWith(fixedMessage)).toBe(true);
+      expect(expectedTrace).toBe(bodyLength === 8_000 ? trace : trace.slice(0, retainedTraceBudget));
+      expect(message.endsWith(bodyLength === 8_000 ? 'x' : '[output truncated]')).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('should treat a run workspace creation failure as a started verification error', async () => {
@@ -393,6 +1379,14 @@ describe('runFormalSpecVerification', () => {
       processResponses.push(
         { code: 0 },
         { code: 0 },
+        { code: 0, stderr: 'error: Invariant violated' },
+      );
+      const passed = await runFormalSpecVerification(quintResponse, directory, { modelCheckTimeoutSeconds: 300 });
+      expect(passed.quint.run).toEqual({ status: 'passed' });
+
+      processResponses.push(
+        { code: 0 },
+        { code: 0 },
         { code: 1, stderr: 'counterexample' },
       );
       const failed = await runFormalSpecVerification(quintResponse, directory, { modelCheckTimeoutSeconds: 300 });
@@ -402,20 +1396,31 @@ describe('runFormalSpecVerification', () => {
       processResponses.push(
         { code: 0 },
         { code: 0 },
-        { error: new Error('spawn failed') },
+        { error: new Error('error: Invariant violated') },
       );
       const errored = await runFormalSpecVerification(quintResponse, directory, { modelCheckTimeoutSeconds: 300 });
       expect(errored.verdict).toBe('error');
-      expect(errored.quint.run).toMatchObject({ status: 'error', message: 'spawn failed' });
+      expect(errored.quint.run).toMatchObject({ status: 'error', message: 'error: Invariant violated' });
+      expect(errored.quint.run?.message).not.toContain('invSafe');
 
       processResponses.push(
         { code: 0 },
         { code: 0 },
-        { code: null },
+        { code: null, stderr: 'error: Invariant violated' },
       );
       const statusless = await runFormalSpecVerification(quintResponse, directory, { modelCheckTimeoutSeconds: 300 });
       expect(statusless.verdict).toBe('error');
       expect(statusless.quint.run).toMatchObject({ status: 'error' });
+      expect(statusless.quint.run?.message).not.toContain('invSafe');
+
+      processResponses.push(
+        { code: 0 },
+        { code: 0 },
+        { code: null, signal: 'SIGTERM', stderr: 'error: Invariant violated' },
+      );
+      const signaled = await runFormalSpecVerification(quintResponse, directory, { modelCheckTimeoutSeconds: 300 });
+      expect(signaled.quint.run).toMatchObject({ status: 'error' });
+      expect(signaled.quint.run?.message).not.toContain('invSafe');
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -427,7 +1432,7 @@ describe('runFormalSpecVerification', () => {
     processResponses.push(
       { code: 0 },
       { code: 0 },
-      { hang: true },
+      { hang: true, stderr: 'error: Invariant violated' },
     );
     try {
       const verification = runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
@@ -437,6 +1442,7 @@ describe('runFormalSpecVerification', () => {
       expect(result.verdict).toBe('error');
       expect(result.quint.run).toMatchObject({ status: 'error' });
       expect(result.quint.run?.message).toContain('timed out');
+      expect(result.quint.run?.message).not.toContain('invSafe');
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -465,20 +1471,34 @@ describe('runFormalSpecVerification', () => {
     );
     try {
       const result = await runFormalSpecVerification('```quint\nmodule verify {}\n```', directory, { modelCheckTimeoutSeconds: 300 });
-      const runCall = spawnedProcesses.find(({ args }) => args.includes('run'));
-      const verifyCall = spawnedProcesses.find(({ args }) => args.includes('verify'));
+      const quintCalls = spawnedProcesses.filter(({ command }) => command === process.execPath);
+      const [parseCall, typecheckCall, runCall, verifyCall] = quintCalls;
+      const specificationPath = parseCall?.args[2];
 
+      expect(result.verdict).toBe('passed');
       expect(result.quint.invariants).toEqual(['invSafe', 'invConsistent']);
       expect(result.quint.temporal).toEqual(['propEventually']);
-      expect(runCall?.args).toEqual(expect.arrayContaining(['--invariants', 'invSafe', 'invConsistent']));
-      expect(runCall?.args).toEqual(expect.arrayContaining(['--main', 'workflowModel']));
-      expect(verifyCall?.args).toEqual(expect.arrayContaining([
+      expect(specificationPath).toEqual(expect.any(String));
+      expect(spawnedProcesses.map(({ command, args }) => command === 'java' ? 'java' : args[1]))
+        .toEqual(['parse', 'typecheck', 'run', 'java', 'verify']);
+      expect(typecheckCall?.args.slice(1)).toEqual(['typecheck', specificationPath]);
+      expect(runCall?.args.slice(1)).toEqual([
+        'run', specificationPath,
+        '--main', 'workflowModel',
+        '--backend', 'typescript',
+        '--max-samples', '1',
+        '--max-steps', '20',
+        '--verbosity', '2',
+        '--invariants', 'invSafe', 'invConsistent',
+      ]);
+      expect(verifyCall?.args.slice(1)).toEqual([
+        'verify', specificationPath,
         '--main', 'workflowModel',
         '--backend', 'tlc',
+        '--max-steps', '20',
         '--invariant', 'invSafe,invConsistent',
         '--temporal', 'propEventually',
-      ]));
-      expect(verifyCall?.args).not.toContain('--verbosity');
+      ]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -620,7 +1640,7 @@ describe('runFormalSpecVerification', () => {
       expect(result.quint.verify?.message).toContain('Bound all state variables');
       expect(result.quint.verify?.message).toContain('finite ranges');
       if (outputLength > 8_000) {
-        expect(result.quint.verify?.message).toHaveLength(8_000 + '\n[output truncated]'.length);
+        expect(result.quint.verify?.message).toHaveLength(8_000);
         expect(result.quint.verify?.message).toContain('[output truncated]');
       }
       if (outputLength > 1024 * 1024) {
