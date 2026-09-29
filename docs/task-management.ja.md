@@ -241,7 +241,11 @@ CLI/TUI の assistant と grill-me 会話では `/requeue [補足]` で failed �
 
 ### PR 失敗タスクの操作
 
-`pr_failed` ステータスのタスク（workflow は成功したが PR 作成/push に失敗）は、PR のエラーメッセージを表示したうえで、**Create PR** を除く完了タスクと同じ操作を提供します。
+`pr_failed` ステータスのタスク（workflow は成功したが PR 作成/push に失敗）は、公開エラーを表示し、**Create PR** を含む完了タスクと同じ操作を提供します。workflow の結果、ローカルブランチ、コミットは保持されます。push に失敗した場合は自動 PR 作成をスキップし、ブランチ、コミット、再試行方法を表示します。
+
+TAKT が管理するリモート push では、Git の HTTPS 認証の端末入力・askpass と Git Credential Manager の対話を無効にします。再試行前に `gh auth login` と `gh auth setup-git`、または credential helper などで認証を設定してください。独自の credential helper や SSH 認証も無人実行できる設定が必要です。
+
+認証または表示された push エラーを解消したら、`takt list` で対象タスクの **Create PR** を選択します。残っている変更のコミット、push、PR 作成を行い、workflow は再実行しません。再試行に成功すると `completed` に更新され、PR URL を保存して公開エラーを解除します。キャンセルまたは再試行失敗時は `pr_failed` とローカルの成果を保持します。
 
 ### Instruct モード
 

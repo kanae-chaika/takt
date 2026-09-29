@@ -6,6 +6,7 @@ import {
   publishTaskBranch,
   resolveAutoCommitOptions,
   stageAndCommit,
+  TaskRunner,
 } from '../../../infra/task/index.js';
 import { createPullRequestSafely, getGitProvider } from '../../../infra/git/index.js';
 import { findRunForTask, loadRunSessionContext } from '../../interactive/index.js';
@@ -138,6 +139,10 @@ export async function createPullRequestForTask(
   if (!result.success) {
     error(`PR 作成に失敗しました: ${result.error}`);
     return false;
+  }
+
+  if (task.kind === 'pr_failed') {
+    new TaskRunner(projectDir).completePublishedTask(task.name, result.url);
   }
 
   success(`PR を作成しました: ${result.url}`);

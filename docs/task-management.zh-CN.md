@@ -235,7 +235,11 @@ takt list
 
 ### PR-Failed 任务的操作
 
-`pr_failed` 表示 workflow 成功但 PR 创建或 push 失败。这类任务显示 PR 错误信息，并提供与已完成任务相同的操作（**Create PR** 除外）。
+`pr_failed` 表示 workflow 成功但 PR 创建或 push 失败。这类任务显示发布错误，并提供与已完成任务相同的操作，包括 **Create PR**。workflow 结果、本地分支和提交会保留。push 失败时跳过自动 PR 创建，并显示分支、提交和重试方法。
+
+TAKT 管理的远程 push 会禁用 Git 的 HTTPS 终端和 askpass 提示，以及 Git Credential Manager 的交互。重试前请通过 `gh auth login` 和 `gh auth setup-git`，或 credential helper 配置认证。自定义 credential helper 和 SSH 认证也需要配置为无需交互。
+
+修复认证或报告的 push 错误后，在 `takt list` 中选择任务并执行 **Create PR**。该操作提交剩余修改、push 分支并创建 PR，不会重新运行 workflow。成功后状态变为 `completed`，保存 PR URL 并清除发布错误。取消或重试失败时保留 `pr_failed` 和本地成果。
 
 ### Instruct 模式
 

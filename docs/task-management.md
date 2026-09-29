@@ -241,7 +241,11 @@ Selecting a running task with a worktree clone opens the ordinary assistant conv
 
 ### Actions for PR-Failed Tasks
 
-Tasks with `pr_failed` status (workflow succeeded but PR creation or push failed) show the PR error message and offer the same actions as completed tasks, except **Create PR**.
+Tasks with `pr_failed` status (workflow succeeded but PR creation or push failed) show the publishing error and offer the same actions as completed tasks, including **Create PR**. The workflow result, local branch, and commit are preserved. A failed push skips automatic PR creation and reports the branch, commit, and retry action.
+
+TAKT-managed remote pushes disable Git's HTTPS terminal and askpass prompts, and Git Credential Manager interaction. Configure authentication before retrying, for example with `gh auth login` and `gh auth setup-git`, or your credential helper. Custom credential helpers and SSH authentication must also be configured for unattended use.
+
+After fixing authentication or the reported push error, select the task in `takt list` and choose **Create PR**. It commits any remaining changes, pushes the branch, and creates a PR without rerunning the workflow. A successful retry changes `pr_failed` to `completed`, records the PR URL, and clears the publishing error. Cancelled or failed retries preserve `pr_failed` and the local results.
 
 ### Instruct Mode
 

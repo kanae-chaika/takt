@@ -150,7 +150,14 @@ export async function postExecutionFlow(options: PostExecutionOptions): Promise<
         outcome: ORIGIN_PUSH_FAILURE_MESSAGE,
         error: pushDetail,
       });
-      const pushFailureMessage = `${ORIGIN_PUSH_FAILURE_MESSAGE} ${pushDetail}`.trim();
+      const pushFailureMessage = [
+        'Workflow completed, but publishing failed. Local results are preserved.',
+        `Branch: ${branch}`,
+        `Commit: ${commitResult.commitHash}`,
+        'Remote: origin',
+        `${ORIGIN_PUSH_FAILURE_MESSAGE} ${pushDetail}`.trim(),
+        'TAKT does not prompt for Git HTTPS credentials. Fix authentication or the push error, then retry with Create PR in takt list.',
+      ].join('\n');
       if (emitStatusLog) {
         error(pushFailureMessage);
       }
