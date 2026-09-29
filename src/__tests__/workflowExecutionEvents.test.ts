@@ -15,7 +15,7 @@ import { WorkflowCallExecutor } from '../core/workflow/engine/WorkflowCallExecut
 import { resetDebugLogger, setVerboseConsole } from '../shared/utils/debug.js';
 import { normalizeRule } from '../infra/config/loaders/workflowRuleNormalizer.js';
 import type { ProviderType } from '../shared/types/provider.js';
-import { MAX_TERMINAL_OUTPUT_BYTES } from '../shared/utils/text.js';
+import { MAX_TERMINAL_OUTPUT_BYTES, sanitizeTerminalText } from '../shared/utils/text.js';
 import { AGENT_FAILURE_CATEGORIES } from '../shared/types/agent-failure.js';
 
 class TestEngine extends EventEmitter {
@@ -1394,6 +1394,89 @@ describe('bindWorkflowExecutionEvents', () => {
     expect(terminalMessage).toContain('Error: codex');
     expect(terminalMessage).toContain('retry after 7:04 PM');
     expect(terminalMessage).toContain(errorMessage);
+  });
+
+  it('UTF-8 byte budget を超える長い rate limit 要約を省き、元エラーを表示する', () => {
+    const errorMessage = 'Original provider error remains visible';
+    const resetAtRaw = '時'.repeat(
+      Math.floor(MAX_TERMINAL_OUTPUT_BYTES / Buffer.byteLength('時', 'utf8')),
+    );
+    const rateLimitSummary = `codex usage limit reached — retry after ${resetAtRaw}`;
+    const summarizedMessage = `${rateLimitSummary}: ${errorMessage}`;
+    const outputBudgetBytes = MAX_TERMINAL_OUTPUT_BYTES - Buffer.byteLength('Error: ', 'utf8');
+    const { engine, out } = createBridgeHarness();
+    const step = {
+      name: 'review',
+      personaDisplayName: 'Reviewer',
+      instruction: '',
+    } as WorkflowStep;
+
+    expect(summarizedMessage.length).toBeLessThan(outputBudgetBytes);
+    expect(Buffer.byteLength(summarizedMessage, 'utf8')).toBeGreaterThan(outputBudgetBytes);
+
+    engine.emit('step:start', step, 1, 'instruction', { provider: 'codex', model: 'gpt-test' }, 'parent', step.name);
+    engine.emit('step:complete', step, {
+      persona: 'reviewer',
+      status: 'rate_limited',
+      content: '',
+      error: errorMessage,
+      errorKind: 'rate_limit',
+      rateLimitInfo: {
+        provider: 'codex',
+        detectedAt: new Date(),
+        source: 'error_text',
+        resetAtRaw,
+      },
+      timestamp: new Date(),
+    }, 'instruction', step.name);
+
+    const terminalMessage = out.error.mock.calls[0]?.[0] as string;
+    expect(terminalMessage).toBe(`Error: ${errorMessage}`);
+    expect(Buffer.byteLength(terminalMessage, 'utf8')).toBeLessThanOrEqual(
+      MAX_TERMINAL_OUTPUT_BYTES,
+    );
+  });
+
+  it('sanitize 後に byte budget を超える rate limit 要約を省き、収まる元エラーを表示する', () => {
+    const resetAtRaw = `${'\0'.repeat(1_500)} original-error-end`;
+    const errorMessage = `Claude SDK rate limit event: resets ${resetAtRaw}`;
+    const rateLimitSummary = `claude-sdk rate limit reached — retry after ${resetAtRaw}`;
+    const summarizedMessage = `${rateLimitSummary}: ${errorMessage}`;
+    const sanitizedError = sanitizeTerminalText(errorMessage);
+    const sanitizedSummarizedMessage = sanitizeTerminalText(summarizedMessage);
+    const outputBudgetBytes = MAX_TERMINAL_OUTPUT_BYTES - Buffer.byteLength('Error: ', 'utf8');
+    const { engine, out } = createBridgeHarness();
+    const step = {
+      name: 'review',
+      personaDisplayName: 'Reviewer',
+      instruction: '',
+    } as WorkflowStep;
+
+    expect(Buffer.byteLength(summarizedMessage, 'utf8')).toBeLessThanOrEqual(outputBudgetBytes);
+    expect(Buffer.byteLength(sanitizedError, 'utf8')).toBeLessThanOrEqual(outputBudgetBytes);
+    expect(Buffer.byteLength(sanitizedSummarizedMessage, 'utf8')).toBeGreaterThan(outputBudgetBytes);
+
+    engine.emit('step:start', step, 1, 'instruction', { provider: 'claude-sdk', model: 'gpt-test' }, 'parent', step.name);
+    engine.emit('step:complete', step, {
+      persona: 'reviewer',
+      status: 'rate_limited',
+      content: '',
+      error: errorMessage,
+      errorKind: 'rate_limit',
+      rateLimitInfo: {
+        provider: 'claude-sdk',
+        detectedAt: new Date(),
+        source: 'error_text',
+        resetAtRaw,
+      },
+      timestamp: new Date(),
+    }, 'instruction', step.name);
+
+    const terminalMessage = out.error.mock.calls[0]?.[0] as string;
+    expect(terminalMessage).toBe(`Error: ${sanitizedError}`);
+    expect(Buffer.byteLength(terminalMessage, 'utf8')).toBeLessThanOrEqual(
+      MAX_TERMINAL_OUTPUT_BYTES,
+    );
   });
 
   it('resetAtRaw のない Claude SDK 応答でも元エラーのリセット情報と原因を端末表示に残す', () => {

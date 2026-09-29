@@ -683,12 +683,21 @@ export function bindWorkflowExecutionEvents(
         ? response.rateLimitInfo
         : undefined;
       const prefix = 'Error: ';
-      const displayMessage = rateLimitInfo === undefined
+      const displayBudgetBytes = MAX_TERMINAL_OUTPUT_BYTES - Buffer.byteLength(prefix, 'utf8');
+      const rateLimitSummary = rateLimitInfo === undefined
+        ? undefined
+        : formatRateLimitSummary(rateLimitInfo);
+      const summarizedMessage = rateLimitSummary === undefined
         ? response.error
-        : `${formatRateLimitSummary(rateLimitInfo)}: ${response.error}`;
+        : `${rateLimitSummary}: ${response.error}`;
+      const summaryExceedsDisplayBudget = rateLimitSummary !== undefined
+        && Buffer.byteLength(sanitizeTerminalText(summarizedMessage), 'utf8') > displayBudgetBytes;
+      const displayMessage = summaryExceedsDisplayBudget
+        ? response.error
+        : summarizedMessage;
       deps.out.error(`${prefix}${sanitizeTerminalTextWithinBytes(
         displayMessage,
-        MAX_TERMINAL_OUTPUT_BYTES - Buffer.byteLength(prefix, 'utf8'),
+        displayBudgetBytes,
       )}`);
       emitWorkflowExecutionEvent(
         deps.eventSink,
