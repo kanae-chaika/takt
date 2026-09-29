@@ -14,6 +14,7 @@ import {
 } from '../../infra/config/index.js';
 import {
   createLogger,
+  getErrorMessage,
   hasInteractiveTerminal,
   sanitizeTerminalText,
 } from '../../shared/utils/index.js';
@@ -48,6 +49,7 @@ import { prependInitialPromptContext } from './promptSections.js';
 import type { PermissionMode } from '../../core/models/index.js';
 import type { InternalAgentIsolation } from '../../shared/types/provider.js';
 import { runTellCommand } from './tellCommand.js';
+import { resolveIssueCommand } from './issueCommand.js';
 import {
   buildInteractiveResultWithAttachments,
   cleanupImageAttachmentStore,
@@ -222,7 +224,8 @@ export async function runConversationLoop(
   const history: ConversationMessage[] = initialUserMessage
     ? [{ role: 'user', content: initialUserMessage }]
     : [];
-  const sourceContext = initialInput?.sourceContext;
+  let sourceContext = initialInput?.sourceContext;
+  let issueContextReplacement: InteractiveModeResult['issueContextReplacement'];
   let referenceRunSlug = strategy.initialReferenceRunSlug;
   let shouldSendInitialPromptContext = !!strategy.initialPromptContext;
   let sessionId = ctx.sessionId;
@@ -247,6 +250,16 @@ export async function runConversationLoop(
     initialInput?.attachments,
     strategy.initialImageAttachmentIndex,
   );
+
+  function buildResultWithAttachments(
+    result: InteractiveModeResult,
+    attachmentsOverride?: readonly InteractiveImageAttachment[],
+  ): InteractiveModeResult {
+    return buildInteractiveResultWithAttachments({
+      ...result,
+      ...(issueContextReplacement === undefined ? {} : { issueContextReplacement }),
+    }, attachmentStore, attachmentsOverride);
+  }
 
   try {
     info(strategy.introMessage);
@@ -356,9 +369,8 @@ export async function runConversationLoop(
       }
       log.info('Conversation action selected', { action: selectedAction, messageCount: history.length });
       const sourceMetadata = strategy.trackResultSource ? { source } : {};
-      return buildInteractiveResultWithAttachments(
+      return buildResultWithAttachments(
         { action: selectedAction, task: normalized.task, ...sourceMetadata },
-        attachmentStore,
         normalized.attachments,
       );
     }
@@ -481,7 +493,7 @@ export async function runConversationLoop(
       if (input === null) {
         blankLine();
         info(ui.cancelled);
-        return buildInteractiveResultWithAttachments({ action: 'cancel', task: '' }, attachmentStore);
+        return buildResultWithAttachments({ action: 'cancel', task: '' });
       }
 
       const trimmed = input.trim();
@@ -527,7 +539,7 @@ export async function runConversationLoop(
             error(result.content);
             blankLine();
             history.pop();
-            return buildInteractiveResultWithAttachments({ action: 'cancel', task: '' }, attachmentStore);
+            return buildResultWithAttachments({ action: 'cancel', task: '' });
           }
           history.push({ role: 'assistant', content: result.content });
           blankLine();
@@ -544,11 +556,11 @@ export async function runConversationLoop(
             info(ui.acceptNoAssistant);
             continue;
           }
-          return buildInteractiveResultWithAttachments({
+          return buildResultWithAttachments({
             action: 'execute',
             task: assistantMessage.content,
             ...(strategy.trackResultSource ? { source: 'accept' as const } : {}),
-          }, attachmentStore);
+          });
         }
 
         case SlashCommand.Verify: {
@@ -651,7 +663,7 @@ export async function runConversationLoop(
           if (!summaryResult.success) {
             error(summaryResult.content);
             blankLine();
-            return buildInteractiveResultWithAttachments({ action: 'cancel', task: '' }, attachmentStore);
+            return buildResultWithAttachments({ action: 'cancel', task: '' });
           }
           const task = summaryResult.content.trim();
           const selectedAction = await handleSummaryAction(task, 'go', strategy.selectGoAction, true);
@@ -669,16 +681,31 @@ export async function runConversationLoop(
             continue;
           }
           log.info('Replay command');
-          return buildInteractiveResultWithAttachments({
+          return buildResultWithAttachments({
             action: 'execute',
             task: replayOrder,
             ...(strategy.trackResultSource ? { source: 'replay' as const } : {}),
-          }, attachmentStore);
+          });
         }
 
         case SlashCommand.Cancel: {
           info(ui.cancelled);
-          return buildInteractiveResultWithAttachments({ action: 'cancel', task: '' }, attachmentStore);
+          return buildResultWithAttachments({ action: 'cancel', task: '' });
+        }
+
+        case SlashCommand.Issue: {
+          try {
+            const resolved = resolveIssueCommand(cwd, match.text, ctx.lang);
+            sourceContext = resolved.sourceContext;
+            issueContextReplacement = {
+              ...(resolved.issueNumber === undefined ? {} : { issueNumber: resolved.issueNumber }),
+            };
+            info(resolved.notice);
+          } catch (caught) {
+            error(sanitizeTerminalText(getErrorMessage(caught)));
+          }
+          blankLine();
+          continue;
         }
 
         case SlashCommand.Tell: {

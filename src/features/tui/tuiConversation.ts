@@ -68,6 +68,7 @@ type SettingsSlashCommand =
   | typeof SlashCommand.Effort;
 
 export type TuiHandoffId =
+  | 'issue'
   | 'workflow'
   | 'mode'
   | 'provider'
@@ -213,7 +214,14 @@ export interface TuiConversation {
   saveInlineImage(image: PastedImage): Promise<string>;
 }
 
-export function createTuiConversation(options: TuiConversationOptions): TuiConversation {
+export interface TuiConversationWithSourceContext extends TuiConversation {
+  /** Replace the Source Context without rebuilding the conversation. */
+  setSourceContext(sourceContext: string): void;
+  /** Current Source Context to retain when settings rebuild the conversation. */
+  getSourceContext(): string | undefined;
+}
+
+export function createTuiConversation(options: TuiConversationOptions): TuiConversationWithSourceContext {
   const { ctx, strategy } = options.plan;
 
   const session = createConversationSession({
@@ -282,6 +290,14 @@ export function createTuiConversation(options: TuiConversationOptions): TuiConve
       session.setEffort(effort);
     },
 
+    setSourceContext(sourceContext: string): void {
+      session.setSourceContext(sourceContext);
+    },
+
+    getSourceContext(): string | undefined {
+      return session.getSourceContext();
+    },
+
     resolveLocalCommand(text: string): TuiLocalCommand | null {
       const trimmed = text.trim();
       const match = matchSlashCommand(trimmed, commandAvailability);
@@ -322,6 +338,8 @@ export function createTuiConversation(options: TuiConversationOptions): TuiConve
           return { kind: 'resume_session' };
         case SlashCommand.PasteImage:
           return { kind: 'paste_image' };
+        case SlashCommand.Issue:
+          return { kind: 'handoff', id: 'issue', text: match.text };
         case SlashCommand.Workflow:
         case SlashCommand.Mode:
         case SlashCommand.Provider:
