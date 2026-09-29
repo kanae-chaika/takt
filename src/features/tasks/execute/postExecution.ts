@@ -156,7 +156,10 @@ export async function postExecutionFlow(options: PostExecutionOptions): Promise<
         `Commit: ${commitResult.commitHash}`,
         'Remote: origin',
         `${ORIGIN_PUSH_FAILURE_MESSAGE} ${pushDetail}`.trim(),
-        'TAKT does not prompt for Git HTTPS credentials. Fix authentication or the push error, then retry with Create PR in takt list.',
+        'TAKT does not prompt for Git HTTPS credentials.',
+        shouldCreatePr
+          ? 'Fix authentication or the push error, then retry with Create PR in takt list.'
+          : 'Fix authentication or the push error, then retry git push for the branch shown above to origin from the project repository.',
       ].join('\n');
       if (emitStatusLog) {
         error(pushFailureMessage);

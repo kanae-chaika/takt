@@ -239,7 +239,11 @@ takt list
 
 TAKT 管理的远程 push 会禁用 Git 的 HTTPS 终端和 askpass 提示，以及 Git Credential Manager 的交互。重试前请通过 `gh auth login` 和 `gh auth setup-git`，或 credential helper 配置认证。自定义 credential helper 和 SSH 认证也需要配置为无需交互。
 
-修复认证或报告的 push 错误后，在 `takt list` 中选择任务并执行 **Create PR**。该操作提交剩余修改、push 分支并创建 PR，不会重新运行 workflow。成功后状态变为 `completed`，保存 PR URL 并清除发布错误。取消或重试失败时保留 `pr_failed` 和本地成果。
+修复认证或报告的 push 错误后，需要 PR 的任务可以在 `takt list` 中选择 **Create PR**。该操作提交剩余修改、push 分支，并复用同一分支的现有 PR，或创建新 PR，不会重新运行 workflow。成功后状态变为 `completed`，保存 PR URL 并清除发布错误。取消或重试失败时保留 `pr_failed` 和本地成果。
+
+如果 PR 发布后保存任务状态失败，TAKT 会显示已发布的 PR URL 和保存错误。请在 `takt list` 中确认状态；如果仍为 `pr_failed`，再次执行 **Create PR**。重试会复用现有 PR 并再次保存任务状态。
+
+对于仅 push 而不创建 PR 的任务，修复认证后，请在项目仓库中将显示的分支手动 push 到 `origin`。手动 push 不会更新任务状态。
 
 ### Instruct 模式
 

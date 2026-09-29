@@ -15,6 +15,8 @@ const {
   mockInfo,
   mockError,
   mockCompletePublishedTask,
+  mockFindExistingPr,
+  mockSuccess,
 } = vi.hoisted(() => ({
   mockExistsSync: vi.fn(() => true),
   mockConfirm: vi.fn(),
@@ -29,6 +31,8 @@ const {
   mockInfo: vi.fn(),
   mockError: vi.fn(),
   mockCompletePublishedTask: vi.fn(),
+  mockFindExistingPr: vi.fn(),
+  mockSuccess: vi.fn(),
 }));
 
 vi.mock('node:fs', async (importOriginal) => ({
@@ -80,6 +84,7 @@ vi.mock('../shared/ui/index.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   info: (...args: unknown[]) => mockInfo(...args),
   error: (...args: unknown[]) => mockError(...args),
+  success: (...args: unknown[]) => mockSuccess(...args),
 }));
 
 import { createPullRequestForTask } from '../features/tasks/list/taskPullRequestActions.js';
@@ -127,7 +132,9 @@ describe('createPullRequestForTask', () => {
     mockConfirm.mockResolvedValue(true);
     mockStageAndCommit.mockResolvedValue('commit-123');
     mockCreatePullRequestSafely.mockReturnValue({ success: true, url: 'https://example.test/pr/1' });
-    mockGetGitProvider.mockReturnValue({});
+    mockGetGitProvider.mockReturnValue({ findExistingPr: mockFindExistingPr });
+    mockFindExistingPr.mockReturnValue(undefined);
+    mockCompletePublishedTask.mockReset();
     mockResolveAutoCommitOptions.mockReturnValue({
       allowGitHooks: false,
       allowGitFilters: false,
@@ -329,6 +336,40 @@ describe('createPullRequestForTask', () => {
     expect(mockCompletePublishedTask).toHaveBeenCalledWith(task.name, 'https://example.test/pr/1');
     expect(mockCompletePublishedTask.mock.invocationCallOrder[0])
       .toBeGreaterThan(mockCreatePullRequestSafely.mock.invocationCallOrder[0]!);
+  });
+
+  it('reports a created PR when state persistence fails and reuses that PR on retry', async () => {
+    const task: TaskListItem = { ...failedTask, kind: 'pr_failed' };
+    const prUrl = 'https://example.test/pr/1';
+    mockStageAndCommit.mockResolvedValue(undefined);
+    mockCompletePublishedTask.mockImplementationOnce(() => {
+      throw new Error('disk full\x1b]0;injected\x07');
+    });
+    mockFindExistingPr
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce({ number: 1, url: prUrl });
+
+    expect(await createPullRequestForTask('/project', task)).toBe(false);
+
+    expect(mockSuccess).toHaveBeenCalledWith(expect.stringContaining(prUrl));
+    expect(mockSuccess.mock.invocationCallOrder[0])
+      .toBeLessThan(mockCompletePublishedTask.mock.invocationCallOrder[0]!);
+    const failureMessage = String(mockError.mock.calls[0]?.[0]);
+    expect(failureMessage).toContain(task.name);
+    expect(failureMessage).toContain('completed');
+    expect(failureMessage).toContain('pr_failed');
+    expect(failureMessage).toContain('disk full');
+    expect(failureMessage).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+
+    expect(await createPullRequestForTask('/project', task)).toBe(true);
+
+    expect(mockFindExistingPr).toHaveBeenNthCalledWith(1, task.branch, '/project');
+    expect(mockFindExistingPr).toHaveBeenNthCalledWith(2, task.branch, '/project');
+    expect(mockCreatePullRequestSafely).toHaveBeenCalledTimes(1);
+    expect(mockCompletePublishedTask).toHaveBeenNthCalledWith(1, task.name, prUrl);
+    expect(mockCompletePublishedTask).toHaveBeenNthCalledWith(2, task.name, prUrl);
+    expect(mockSuccess).toHaveBeenLastCalledWith(expect.stringContaining(prUrl));
+    expect(mockError).toHaveBeenCalledTimes(1);
   });
 
   it.each(['cancel', 'commit', 'push', 'pr'] as const)('pr_failed retry preserves its status when %s does not succeed', async (stage) => {
