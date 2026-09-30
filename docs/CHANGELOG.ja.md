@@ -21,6 +21,7 @@
 - `/verify` のモデル検査の既定制限時間 `assistant.formal_spec.model_check_timeout_seconds` を 300 秒から 900 秒に変更しました (#1636)。
 - `/verify` の結果を解釈するとき、assistant がその回の検証成果物（仕様、`parse.json`、検証器の stdout/stderr ログ）を読み取り専用で読むようになり、ログに残る違反名や反例が説明に反映されます (#1630)。
 - DeepSeek Harness の失敗メッセージに、runtime の stderr と判別できない上流のテキストを含めないようにしました (#1619)。既知の SDK の失敗（JSON-RPC エラー、接続の切断、タイムアウト、プロトコルエラー、runtime の欠落）は原因ごとの固定メッセージで報告し、上流のメッセージは既知の1行形式のものだけを、モデル名・ホスト・トークンらしき値を伏せたうえで表示します。
+- Codex SDK を 0.159.2 に更新しました。`gpt-6.1-sol` を利用できます。
 
 ### Fixed
 
@@ -28,7 +29,6 @@
 - Kiro provider が現在の `kiro-cli` で動くようになりました。`--agent-engine` を使い、ACP の stream-json イベントから応答テキストを読み取ります (#1617)。
 - Pi で、明示的に設定した extension が builtin と同名のツール（例: `read`）を登録した場合、その名前が消えるのではなく、権限の範囲内で extension のツールが builtin を置き換えるようになりました (#1602)。空文字や空白だけからなる `allowedTools` はすべてのツールを拒否します。
 - OpenCode で、provider がネイティブの形式指定要求（`Unsupported parameter: 'response_format'` を含む）を拒否した場合に、形式指定なしの構造化出力へ切り替えるようにしました (#1594)。
-- Codex SDK を 0.159.2 に更新し、ChatGPT 認証で `gpt-6.1-sol` を指定したときに 400 エラーにならないようにしました。
 - judge の段階的判定で、stage 2 で provider が失敗したときにワークフローを中断せず次の段階へ進むようにしました (#1593, #1607)。
 - Claude headless で、ストリームのコールバックが投げた例外により呼び出しが止まったままにならず失敗として返るようにし、呼び出しの終了後にストリームイベントを配信しないようにしました (#1595)。
 - `quint parse` が失敗したとき、`/verify` が「Process exited with status 1」だけでなく、Quint の parse エラーをファイル・行・列付きで表示するようにしました (#1610)。

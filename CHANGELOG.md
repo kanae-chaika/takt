@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The default `assistant.formal_spec.model_check_timeout_seconds` for `/verify` model checking is now 900 seconds instead of 300 (#1636).
 - When `/verify` results are interpreted, the assistant reads the verification artifacts of that run (specifications, `parse.json`, and verifier stdout/stderr logs) read-only, so violation names and counterexamples in the logs are reflected in the explanation (#1630).
 - DeepSeek Harness failure messages no longer include runtime stderr or unrecognized upstream text (#1619). Known SDK failures (JSON-RPC errors, closed transport, timeouts, protocol errors, missing runtime) are reported with fixed cause-specific messages, and only known single-line provider messages are shown with model names, hosts, and token-like values replaced.
+- The Codex SDK is updated to 0.159.2, which supports `gpt-6.1-sol`.
 
 ### Fixed
 
@@ -28,7 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Kiro provider works with current `kiro-cli`: it uses `--agent-engine` and reads assistant text from the ACP stream-json events (#1617).
 - Pi: an explicitly configured extension that registers a tool with a builtin name (for example `read`) now replaces the builtin within the permission boundary instead of removing the name (#1602). `allowedTools` lists that contain only empty or whitespace entries deny every tool.
 - OpenCode falls back to formatless structured output when the provider rejects the native format request, including `Unsupported parameter: 'response_format'` (#1594).
-- The Codex SDK is updated to 0.159.2 so that `gpt-6.1-sol` can be used with ChatGPT authentication instead of failing with a 400 error.
 - The judge ladder continues to its next stage when the provider fails at stage 2 instead of aborting the workflow (#1593, #1607).
 - Claude headless: an exception thrown by the stream callback rejects the call instead of hanging it, and no stream events are delivered after the call has settled (#1595).
 - `/verify` shows the Quint parse errors with file, line, and column when `quint parse` fails, instead of only "Process exited with status 1" (#1610).
