@@ -33,6 +33,7 @@ import { buildConversationSummaryPrompt } from './interactiveApplication.js';
 import type { RunSessionContext } from './runSessionReader.js';
 import type { ImageAttachmentCleanupOwner, InteractiveImageAttachment } from './imageAttachments.js';
 import { resolveFormalSpecConfiguration } from './taskInstructionFormat.js';
+import type { ConversationDispatchOutcome } from './actionDispatcher.js';
 
 /** Shape of interactive UI text */
 export interface InteractiveUIText {
@@ -188,6 +189,8 @@ export interface InteractiveModeOptions {
   model?: string;
   /** Assistant conversation behavior. */
   assistantMode?: AssistantInteractiveMode;
+  /** Dispatch a selected summary action before leaving the conversation loop. */
+  dispatch?: (result: InteractiveModeResult) => Promise<ConversationDispatchOutcome>;
 }
 
 export interface InteractiveSeedInput {
@@ -234,6 +237,7 @@ export async function interactiveMode(
   return runConversationLoop(cwd, ctx, {
     ...strategy,
     selectAction,
+    ...(options?.dispatch === undefined ? {} : { dispatch: options.dispatch }),
   }, workflowContext, initialInput);
 }
 
