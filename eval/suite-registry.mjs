@@ -57,6 +57,7 @@ const CLASSIFICATIONS = [
       'initial-plan-contract-closure',
       'implement-contract-traceability',
       'implementation-report-contract-traceability',
+      'implementation-report-contract-traceability-en',
       'completion-scope-routing',
       'completion-scope-structured',
       'implement-scope-actions',
@@ -153,6 +154,12 @@ const CLASSIFICATIONS = [
 ];
 
 const EXECUTION_OVERRIDES = {
+  'implementation-report-contract-traceability-en': {
+    defaultEligible: false,
+    credentials: ['codex'],
+    cost: 'standard',
+    reason: '英語の実Phase2出力を日本語と同じ3条件で明示的に比較する',
+  },
   'interactive-topic-boundary': {
     defaultEligible: false,
     credentials: ['claude', 'codex'],

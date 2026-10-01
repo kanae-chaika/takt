@@ -1,14 +1,14 @@
 # yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
-description: 'TAKT facet eval: implementation report uses actual plan and discovery rows without inventing missing work'
+description: 'TAKT facet eval: English implementation report uses actual plan and discovery rows without inventing missing work'
 
 prompts:
-  - file://../../prompts/implementation-report-contract-traceability.phase2.md
+  - file://../../prompts/implementation-report-contract-traceability-en.phase2.md
 
 providers:
   - id: openai:codex-sdk
     label: codex
     config:
-      working_dir: ../../.work/implementation-report-contract-traceability
+      working_dir: ../../.work/implementation-report-contract-traceability-en
       sandbox_mode: read-only
       approval_policy: never
       skip_git_repo_check: true
