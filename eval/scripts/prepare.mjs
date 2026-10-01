@@ -93,6 +93,10 @@ const TARGETS = [
   { id: 'fix-plan-fresh-findings', workflow: 'peer-review', step: 'fix-plan', fixture: 'eval/fixtures/fix-plan-fresh-findings' },
   { id: 'fix-plan-boundary-preflight', workflow: 'peer-review', step: 'fix-plan', fixture: 'eval/fixtures/fix-plan-boundary-preflight' },
   { id: 'fix-plan-cause-check', workflow: 'peer-review', step: 'fix-plan', fixture: 'eval/fixtures/fix-plan-cause-check' },
+  { id: 'remediation-scope-fix-plan', workflow: 'peer-review', step: 'fix-plan', fixture: 'eval/fixtures/remediation-scope', requiredFacetKinds: ['policies', 'knowledge'] },
+  { id: 'remediation-scope-fix-plan-en', workflow: 'peer-review', step: 'fix-plan', fixture: 'eval/fixtures/remediation-scope', language: 'en', requiredFacetKinds: ['policies', 'knowledge'] },
+  { id: 'remediation-scope-write-tests', workflow: 'review-fix-takt-default', step: 'write_tests', fixture: 'eval/fixtures/remediation-scope-tests', mutable: true, requiredFacetKinds: ['policies', 'knowledge'] },
+  { id: 'remediation-scope-write-tests-en', workflow: 'review-fix-takt-default', step: 'write_tests', fixture: 'eval/fixtures/remediation-scope-tests', language: 'en', mutable: true, requiredFacetKinds: ['policies', 'knowledge'] },
   { id: 'fix-plan-blocker-absorption', workflow: 'peer-review', step: 'fix-replan', fixture: 'eval/fixtures/fix-plan-blocker-absorption', reportFile: 'fix-plan.md' },
   { id: 'fix-plan-bounded-proof', workflow: 'peer-review', step: 'fix-plan', fixture: 'eval/fixtures/fix-plan-bounded-proof' },
   {
@@ -436,6 +440,7 @@ export const PREPARE_TARGET_IDS = Object.freeze(TARGETS.map(({ id }) => id));
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
 process.env.TAKT_CONFIG_DIR = resolve(scriptDir, '../config');
+const defaultEvalConfigDir = process.env.TAKT_CONFIG_DIR;
 
 const {
   loadWorkflowByIdentifier,
@@ -446,6 +451,9 @@ const {
 );
 const { InstructionBuilder } = await import(
   pathToFileURL(join(repoRoot, 'dist/core/workflow/instruction/InstructionBuilder.js')).href
+);
+const { invalidateGlobalConfigCache } = await import(
+  pathToFileURL(join(repoRoot, 'dist/infra/config/global/globalConfigCore.js')).href
 );
 const { ReportInstructionBuilder } = await import(
   pathToFileURL(join(repoRoot, 'dist/core/workflow/instruction/ReportInstructionBuilder.js')).href
@@ -627,11 +635,11 @@ async function main() {
   }
   const targets = requested.length > 0 ? TARGETS.filter((t) => requested.includes(t.id)) : TARGETS;
 
-  const language = EVAL_LANGUAGE;
   const preparedDirs = new Set();
 
   for (const {
     id,
+    language: targetLanguage,
     workflow: workflowName,
     companion: companionName,
     via,
@@ -652,6 +660,11 @@ async function main() {
     requiredFacetKinds,
     promptExtension,
   } of targets) {
+    const language = targetLanguage ?? EVAL_LANGUAGE;
+    process.env.TAKT_CONFIG_DIR = language === EVAL_LANGUAGE
+      ? defaultEvalConfigDir
+      : join(defaultEvalConfigDir, language);
+    invalidateGlobalConfigCache();
     if (requestedPhase !== undefined && monitorCycle !== undefined) {
       throw new Error(`Target "${id}" cannot define both phase and monitorCycle`);
     }
