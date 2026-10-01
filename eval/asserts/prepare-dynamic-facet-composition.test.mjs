@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, URL } from 'node:url';
 
@@ -217,4 +218,26 @@ test('renders the production review-adjudication Phase 2 report contract', () =>
   const prompt = readFileSync(promptPath, 'utf8');
   assert.match(prompt, /review-resolution\.md/);
   assert.match(prompt, /\{\{previous_response\}\}/);
+});
+
+test('seeds a prior final-gate report only for reviewed replan targets', () => {
+  runPrepare([
+    'verification-retry-replan',
+    'verification-retry-replan-en',
+    'verification-retry-replan-reviewed',
+    'verification-retry-replan-reviewed-en',
+  ]);
+
+  const segment = `iteration-1--step-peer-review--workflow-peer-review--site-${'0'.repeat(64)}`;
+  const reportTail = join('.takt', 'runs', 'eval', 'reports', 'subworkflows', segment, 'review-resolution.md');
+  for (const suffix of ['', '-en']) {
+    const reviewedDir = join(REPO_ROOT, 'eval', '.work', `verification-retry-replan-reviewed${suffix}`);
+    const plainDir = suffix === ''
+      ? join(REPO_ROOT, 'eval', 'fixtures', 'verification-retry-routing')
+      : join(REPO_ROOT, 'eval', '.work', 'verification-retry-replan-en');
+    assert.match(readFileSync(join(reviewedDir, reportTail), 'utf8'), /BLOCKED/);
+    assert.equal(existsSync(join(plainDir, reportTail)), false);
+    const prompt = readFileSync(join(REPO_ROOT, 'eval', 'prompts', `verification-retry-replan-reviewed${suffix}.phase1.md`), 'utf8');
+    assert.match(prompt, /review-resolution\.md/);
+  }
 });
