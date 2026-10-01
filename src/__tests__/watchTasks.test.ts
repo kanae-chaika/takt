@@ -16,6 +16,7 @@ const {
   mockWarn,
   mockError,
   mockResolveWorkflowConfigValues,
+  mockForceExitAfterOpenCodeCleanup,
 } = vi.hoisted(() => ({
   mockFailInterruptedRunningTasks: vi.fn(),
   mockGetTasksFilePath: vi.fn(),
@@ -31,6 +32,7 @@ const {
   mockWarn: vi.fn(),
   mockError: vi.fn(),
   mockResolveWorkflowConfigValues: vi.fn(),
+  mockForceExitAfterOpenCodeCleanup: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../infra/task/index.js', () => ({
@@ -68,6 +70,10 @@ vi.mock('../shared/i18n/index.js', () => ({
 
 vi.mock('../infra/config/index.js', () => ({
   resolveWorkflowConfigValues: mockResolveWorkflowConfigValues,
+}));
+
+vi.mock('../features/tasks/execute/forceShutdown.js', () => ({
+  forceExitAfterOpenCodeCleanup: mockForceExitAfterOpenCodeCleanup,
 }));
 
 import { watchTasks } from '../features/tasks/watch/index.js';
@@ -114,6 +120,31 @@ describe('watchTasks', () => {
       undefined,
     );
     expect(mockExecuteAndCompleteTask).not.toHaveBeenCalled();
+  });
+
+  it('強制終了前にOpenCodeの一時資源を閉じる', async () => {
+    let markStarted!: () => void;
+    let finishWatch!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    mockWatch.mockImplementation(async () => {
+      markStarted();
+      await new Promise<void>((resolve) => {
+        finishWatch = resolve;
+      });
+    });
+    mockStop.mockImplementation(() => finishWatch());
+
+    const execution = watchTasks('/project');
+    await started;
+    const listeners = process.rawListeners('SIGINT') as Array<() => void>;
+    const handler = listeners[listeners.length - 1]!;
+    handler();
+    handler();
+
+    expect(mockForceExitAfterOpenCodeCleanup).toHaveBeenCalledOnce();
+    await execution;
   });
 
   it('config 解決が失敗した場合は task 状態変更と watch 開始を行わない', async () => {

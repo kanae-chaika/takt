@@ -15,8 +15,8 @@ import {
   warn,
 } from '../../../shared/ui/index.js';
 import { executeRunTaskAndComplete, type RunTaskExecutionContext } from '../execute/runTaskExecution.js';
-import { EXIT_SIGINT } from '../../../shared/exitCodes.js';
 import { ShutdownManager } from '../execute/shutdownManager.js';
+import { forceExitAfterOpenCodeCleanup } from '../execute/forceShutdown.js';
 import type { RunAllTasksOptions, TaskExecutionOptions } from '../execute/types.js';
 import { resolveWorkflowConfigValues } from '../../../infra/config/index.js';
 
@@ -74,7 +74,7 @@ export async function watchTasks(cwd: string, options?: RunAllTasksOptions): Pro
       },
       onForceKill: () => {
         watcher.stop();
-        process.exit(EXIT_SIGINT);
+        void forceExitAfterOpenCodeCleanup();
       },
     },
   });
