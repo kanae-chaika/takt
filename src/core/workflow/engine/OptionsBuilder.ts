@@ -852,6 +852,7 @@ export class OptionsBuilder {
     return {
       cwd: this.getCwd(),
       task: this.getTask?.(),
+      userInputs: [...state.userInputs],
       reviewScope: this.getReviewScope?.(),
       reportDir: resolveReportDirectory(this.getCwd(), this.getReportDir()),
       ...(this.getReportsRootDir === undefined ? {} : { reportsRootDir: this.getReportsRootDir() }),

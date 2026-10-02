@@ -79,6 +79,7 @@ import type {
 import type { CompanionDiffBaseline } from '../companion/step-runtime.js';
 import type { PreparedLiveInterventionDelivery } from '../live-intervention/types.js';
 import { createLiveInterventionDeliveryCommitter } from '../live-intervention/delivery.js';
+import { Phase1ReportInputTracker } from '../instruction/report-inputs.js';
 
 const log = createLogger('team-leader-runner');
 
@@ -293,10 +294,11 @@ export class TeamLeaderRunner {
           target: 'team_leader_step',
         })
       : undefined;
+    const reportInputTracker = new Phase1ReportInputTracker(preparedInstruction.reportInputs);
     const initialDeliveryCommitter = createLiveInterventionDeliveryCommitter(
       liveIntervention,
       initialLiveDelivery,
-      undefined,
+      () => reportInputTracker.recordDelivery(initialLiveDelivery),
     );
     const leaderInstruction = [instruction, initialLiveDelivery?.prompt]
       .filter((part): part is string => part !== undefined && part.length > 0)
@@ -604,7 +606,7 @@ export class TeamLeaderRunner {
       const deliveryCommitter = createLiveInterventionDeliveryCommitter(
         liveIntervention,
         liveDelivery,
-        undefined,
+        () => reportInputTracker.recordDelivery(liveDelivery),
       );
       let response: MorePartsResponse;
       try {
@@ -653,7 +655,7 @@ export class TeamLeaderRunner {
         const followUpCommitter = createLiveInterventionDeliveryCommitter(
           liveIntervention,
           followUpDelivery,
-          undefined,
+          () => reportInputTracker.recordDelivery(followUpDelivery),
         );
         try {
           const followUpResponse = await structuredCaller.requestMoreParts(
@@ -1243,6 +1245,7 @@ export class TeamLeaderRunner {
       },
       undefined,
       preparedInstruction.injectedReports,
+      reportInputTracker.snapshot(),
     );
 
     state.stepOutputs.set(step.name, aggregatedResponse);
