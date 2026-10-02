@@ -36,6 +36,7 @@ import type { TaskHistorySummaryItem } from '../interactive/interactive-summary-
 import { selectInteractiveMode } from '../interactive/modeSelection.js';
 import { selectInteractiveProvider } from '../interactive/providerSelection.js';
 import { runTellCommand } from '../interactive/tellCommand.js';
+import { runAssistantRetryCommand } from '../interactive/assistantRetryCommand.js';
 import { resolveTaskStateMcp } from '../interactive/taskStateMcp.js';
 import { formatSessionStatus } from '../interactive/interactive.js';
 import type { InteractiveModeResult, InteractiveUIText } from '../interactive/interactive.js';
@@ -200,6 +201,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiRunResult> {
     let temporaryModelActive = false;
     let formalSpecConfiguration: ResolvedFormalSpecConfiguration | undefined;
     let currentPlan: ConversationPlan;
+    let currentWorkflowContext: ReturnType<typeof workflowContext> | undefined;
     let currentConversation: TuiConversationWithSourceContext;
     let issueContextReplacement: InteractiveModeResult['issueContextReplacement'];
     let pendingRebuild = false;
@@ -228,6 +230,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiRunResult> {
         firstStepOverrides,
       );
       const context = workflowContext(description);
+      currentWorkflowContext = context;
       const personaFallback = selectedMode === 'persona' && description.firstStep === undefined;
       const usePersonaPlan = selectedMode === 'persona' && description.firstStep !== undefined;
       if (!usePersonaPlan && formalSpecConfiguration === undefined) {
@@ -388,6 +391,9 @@ export async function runTui(options: RunTuiOptions): Promise<TuiRunResult> {
         await currentConversation.resumeSession(sessionId);
         return undefined;
       },
+      getSessionId(): string | undefined {
+        return currentConversation.getSessionId();
+      },
       recordRejectedDraft(task: string): void {
         currentConversation.recordRejectedDraft?.(task);
       },
@@ -503,6 +509,41 @@ export async function runTui(options: RunTuiOptions): Promise<TuiRunResult> {
               }),
             };
           }
+        case 'assistant-requeue':
+        case 'assistant-retry': {
+          const rebuildError = await ensureCurrentConversation();
+          if (rebuildError !== undefined) {
+            return {
+              kind: 'continue' as const,
+              notice: rebuildError,
+            };
+          }
+          const sessionContext = {
+            ...currentPlan.ctx,
+            ...(selectedEffort === undefined ? {} : { effort: selectedEffort }),
+            sessionId: conversationFacade.getSessionId(),
+          };
+          const history = conversationFacade.snapshotHistory?.() ?? [];
+          const sourceContext = currentConversation.getSourceContext() ?? options.sourceContext;
+          return {
+            kind: 'continue' as const,
+            notice: await runAssistantRetryCommand({
+              cwd: options.cwd,
+              lang: options.lang,
+              command: id === 'assistant-requeue' ? 'requeue' : 'retry',
+              inlineText: text,
+              history,
+              sessionContext,
+              workflowContext: currentWorkflowContext,
+              ...(sourceContext === undefined ? {} : { sourceContext }),
+              ...(currentPlan.strategy.summaryPromptContext === undefined
+                ? {}
+                : { promptContext: currentPlan.strategy.summaryPromptContext }),
+              formalSpec: currentPlan.strategy.formalSpec,
+              formalSpecComments: currentPlan.strategy.formalSpecComments,
+            }),
+          };
+        }
         default:
           throw new Error(`Unknown TUI hand-off: ${id}`);
       }

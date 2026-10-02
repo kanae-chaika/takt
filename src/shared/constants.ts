@@ -20,6 +20,7 @@ export const SlashCommand = {
   Go: '/go',
   Issue: '/issue',
   Tell: '/tell',
+  Requeue: '/requeue',
   Retry: '/retry',
   Replay: '/replay',
   Cancel: '/cancel',

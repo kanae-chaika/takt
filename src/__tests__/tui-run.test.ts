@@ -31,7 +31,6 @@ import { getLabel } from '../shared/i18n/index.js';
 
 const {
   mockRender,
-  mockRenderToString,
   mockCreateTuiConversation,
   mockDetermineWorkflow,
   mockSelectInteractiveMode,
@@ -44,6 +43,7 @@ const {
   mockTakeSessionState,
   mockResolveAssistantProviderModel,
   mockRunTellCommand,
+  mockRunAssistantRetryCommand,
   mockInfo,
   mockWatchProcessExit,
   mockReleaseProcessExit,
@@ -53,7 +53,6 @@ const {
   realTuiConversation,
 } = vi.hoisted(() => ({
   mockRender: vi.fn(),
-  mockRenderToString: vi.fn(),
   mockCreateTuiConversation: vi.fn(),
   mockDetermineWorkflow: vi.fn(),
   mockSelectInteractiveMode: vi.fn(),
@@ -66,6 +65,7 @@ const {
   mockTakeSessionState: vi.fn(),
   mockResolveAssistantProviderModel: vi.fn(),
   mockRunTellCommand: vi.fn(),
+  mockRunAssistantRetryCommand: vi.fn(),
   mockInfo: vi.fn(),
   mockWatchProcessExit: vi.fn(),
   mockReleaseProcessExit: vi.fn(),
@@ -81,7 +81,7 @@ const mockCreateStore = (cwd: string): unknown => storeOverride.current?.(cwd);
 
 vi.mock('ink', () => ({
   render: (...args: unknown[]) => mockRender(...args),
-  renderToString: (...args: unknown[]) => mockRenderToString(...args),
+  Static: () => null,
   Box: () => null,
   Text: () => null,
   useInput: () => undefined,
@@ -119,6 +119,10 @@ vi.mock('../features/interactive/providerSelection.js', () => ({
 
 vi.mock('../features/interactive/tellCommand.js', () => ({
   runTellCommand: (...args: unknown[]) => mockRunTellCommand(...args),
+}));
+
+vi.mock('../features/interactive/assistantRetryCommand.js', () => ({
+  runAssistantRetryCommand: (...args: unknown[]) => mockRunAssistantRetryCommand(...args),
 }));
 
 vi.mock('../features/interactive/assistantConfig.js', () => ({
@@ -210,7 +214,12 @@ function scriptRender(): MountedTree {
       resolveExit = resolve;
     });
     exitInk = resolveExit;
-    return { unmount, clear: () => undefined, waitUntilExit: () => exited };
+    return {
+      unmount,
+      clear: () => undefined,
+      waitUntilRenderFlush: async () => undefined,
+      waitUntilExit: () => exited,
+    };
   });
 
   const requireProps = (): ConversationViewProps => {
@@ -264,6 +273,7 @@ function createConversationDouble(
     resumeSession: vi.fn(),
     recordRejectedDraft: vi.fn(),
     snapshotHistory: vi.fn(() => []),
+    getSessionId: vi.fn(() => undefined),
     setEffort: vi.fn(),
     setSourceContext: vi.fn((nextSourceContext: string) => {
       sourceContext = nextSourceContext;
@@ -338,7 +348,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGetGitProvider.mockReset();
   mockUpdatePersonaSession.mockReset();
-  mockRenderToString.mockReturnValue('final transcript');
   realTuiConversation.current = false;
   // clearAllMocks keeps implementations, and some cases install a throwing one.
   mockCreateTuiConversation.mockReset();
@@ -358,6 +367,7 @@ beforeEach(() => {
   }));
   mockSelectRecentSession.mockResolvedValue(null);
   mockRunTellCommand.mockResolvedValue('The instruction was sent.');
+  mockRunAssistantRetryCommand.mockResolvedValue('The task was queued.');
   mockSelectAction.mockResolvedValue('execute');
   mockLoadPersonaSessions.mockReturnValue({});
   mockTakeSessionState.mockReturnValue(null);
@@ -622,6 +632,150 @@ describe('runTui', () => {
       [12, '/repo'],
       [34, '/repo'],
     ]);
+  });
+
+  it.each(['assistant-retry', 'assistant-requeue'] as const)('passes the Issue replacement to the %s handoff', async (id) => {
+    installIssueProvider();
+    const tree = scriptRender();
+    const run = startRun({ sourceContext: 'Original Issue context' });
+    await waitForMount(tree, 1);
+
+    tree.conversationProps().onExit(
+      { kind: 'handoff', id: 'issue', text: '456' },
+      { history: [], queue: [] },
+    );
+    await waitForMount(tree, 2);
+    tree.conversationProps().onExit(
+      { kind: 'handoff', id, text: '' },
+      { history: [], queue: [] },
+    );
+    await waitForMount(tree, 3);
+
+    expect(mockRunAssistantRetryCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command: id === 'assistant-retry' ? 'retry' : 'requeue',
+      sourceContext: expect.stringContaining('## Issue #456: Issue 456'),
+    }));
+    expect(mockCreateTuiConversation).toHaveBeenCalledTimes(1);
+    tree.conversationProps().onExit(
+      { kind: 'result', result: { action: 'cancel', task: '' } },
+      { history: [], queue: [] },
+    );
+    await run;
+  });
+
+  it('routes the assistant /retry handoff through the shared handler and resumes the conversation', async () => {
+    const history = [
+      { role: 'user' as const, content: 'The diagnostics task fails in review.' },
+      { role: 'assistant' as const, content: 'The task is fix-quint-diagnostics.' },
+    ];
+    const conversation = createConversationDouble({
+      snapshotHistory: vi.fn(() => history),
+    });
+    mockCreateTuiConversation.mockReturnValue(conversation);
+    const tree = scriptRender();
+    const run = startRun();
+    await waitForMount(tree, 1);
+
+    tree.conversationProps().onExit(
+      { kind: 'handoff', id: 'assistant-retry', text: 'restart from the beginning' },
+      { history: [], queue: [] },
+    );
+    await waitForMount(tree, 2);
+
+    expect(mockRunAssistantRetryCommand).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: '/repo',
+      lang: 'en',
+      command: 'retry',
+      inlineText: 'restart from the beginning',
+      history,
+      sessionContext: expect.objectContaining({
+        providerType: 'mock',
+        lang: 'en',
+        sessionId: undefined,
+      }),
+      formalSpec: expect.any(Boolean),
+    }));
+    expect(mockCreateTuiConversation).toHaveBeenCalledTimes(1);
+    expect(tree.conversationProps().initialEntries).toEqual([{
+      role: 'system',
+      content: 'The task was queued.',
+    }]);
+
+    tree.conversationProps().onExit(
+      { kind: 'result', result: { action: 'cancel', task: '' } },
+      { history: [], queue: [] },
+    );
+    await run;
+  });
+
+  it('routes the assistant /requeue handoff as requeue through the shared handler', async () => {
+    const conversation = createConversationDouble();
+    mockCreateTuiConversation.mockReturnValue(conversation);
+    const tree = scriptRender();
+    const run = startRun();
+    await waitForMount(tree, 1);
+
+    tree.conversationProps().onExit(
+      { kind: 'handoff', id: 'assistant-requeue', text: 'resume from review' },
+      { history: [], queue: [] },
+    );
+    await waitForMount(tree, 2);
+
+    expect(mockRunAssistantRetryCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command: 'requeue',
+      inlineText: 'resume from review',
+      sessionContext: expect.objectContaining({ sessionId: undefined }),
+    }));
+
+    tree.conversationProps().onExit(
+      { kind: 'result', result: { action: 'cancel', task: '' } },
+      { history: [], queue: [] },
+    );
+    await run;
+  });
+
+  it.each([
+    { label: 'without a resumed session', selectedSession: null, expectedSessionId: undefined },
+    { label: 'after /resume', selectedSession: 'session-abc', expectedSessionId: 'session-abc' },
+  ])('passes the current provider session to /retry $label', async ({ selectedSession, expectedSessionId }) => {
+    let currentSessionId: string | undefined;
+    const conversation: TuiConversationWithSourceContext = {
+      ...createConversationDouble({ snapshotHistory: vi.fn(() => []) }),
+      resumeSession: vi.fn(async (sessionId: string) => {
+        currentSessionId = sessionId;
+        return undefined;
+      }),
+      getSessionId: vi.fn(() => currentSessionId),
+    };
+    mockCreateTuiConversation.mockReturnValue(conversation);
+    const tree = scriptRender();
+    const run = startRun();
+    await waitForMount(tree, 1);
+
+    if (selectedSession !== null) {
+      await tree.conversationProps().conversation.resumeSession(selectedSession);
+    }
+
+    const mountCount = tree.mounts.count;
+    tree.conversationProps().onExit(
+      { kind: 'handoff', id: 'assistant-retry', text: '' },
+      { history: [], queue: [] },
+    );
+    await waitForMount(tree, mountCount + 1);
+
+    const call = mockRunAssistantRetryCommand.mock.calls[0]?.[0] as {
+      history: readonly unknown[];
+      sessionContext: { sessionId?: string };
+    };
+    expect(call.history).toEqual([]);
+    const handedOffSessionId = call.sessionContext.sessionId;
+
+    tree.conversationProps().onExit(
+      { kind: 'result', result: { action: 'cancel', task: '' } },
+      { history: [], queue: [] },
+    );
+    await run;
+    expect(handedOffSessionId).toBe(expectedSessionId);
   });
 
   it('should report a cancelled workflow selection without mounting Ink', async () => {
@@ -2064,63 +2218,6 @@ describe('runTui', () => {
   });
 
   describe('selectors between mounts', () => {
-    it('should hold the finalized transcript until Ink clears the live frame', async () => {
-      const written = vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
-      const tree = scriptRender();
-      const run = startRun();
-      await waitForMount(tree, 1);
-      const entries = [
-        { role: 'user', content: 'question' },
-        { role: 'assistant', content: 'answer' },
-      ] as const;
-
-      const conversation = tree.conversationProps();
-      conversation.finalizeTranscript(entries, 14);
-
-      expect(mockRenderToString).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
-          props: expect.objectContaining({
-            entries,
-            userMessageColors: conversation.userMessageColors,
-          }),
-        }),
-        { columns: 14 },
-      );
-      expect(written.mock.calls.flat().map(String)).not.toContain('final transcript\n');
-
-      conversation.onExit(
-        { kind: 'result', result: { action: 'cancel', task: '' } },
-        { history: [], queue: [] },
-      );
-      await run;
-
-      expect(written.mock.calls.flat().map(String)
-        .filter((chunk) => chunk === 'final transcript\n')).toHaveLength(1);
-    });
-
-    it('should fail after unmount when writing the finalized transcript fails', async () => {
-      const failure = new Error('transcript write failed');
-      vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
-        if (String(chunk) === 'final transcript\n') {
-          throw failure;
-        }
-        return true;
-      }) as typeof process.stdout.write);
-      const tree = scriptRender();
-      const run = startRun();
-      await waitForMount(tree, 1);
-
-      const conversation = tree.conversationProps();
-      conversation.finalizeTranscript([{ role: 'user', content: 'question' }], 14);
-      conversation.onExit(
-        { kind: 'result', result: { action: 'cancel', task: '' } },
-        { history: [], queue: [] },
-      );
-
-      await expect(run).rejects.toBe(failure);
-      expect(tree.unmount).toHaveBeenCalledOnce();
-    });
-
     it('should run the action selector with Ink unmounted and finish on its choice', async () => {
       const tree = scriptRender();
       mockSelectAction.mockImplementation(() => {
@@ -2790,6 +2887,7 @@ describe('runTui', () => {
     /** Ink calls that fail at a chosen stage, so each teardown step can be exercised. */
     function scriptFailingRender(failing: {
       readonly render?: Error;
+      readonly waitUntilRenderFlush?: Error;
       readonly unmount?: Error;
       readonly waitUntilExit?: Error;
     }): {
@@ -2825,6 +2923,9 @@ describe('runTui', () => {
         return {
           unmount,
           clear: () => undefined,
+          waitUntilRenderFlush: () => failing.waitUntilRenderFlush === undefined
+            ? Promise.resolve()
+            : Promise.reject(failing.waitUntilRenderFlush),
           waitUntilExit: () => exitFailure ?? exited,
         };
       });
@@ -2878,6 +2979,18 @@ describe('runTui', () => {
       tree.exit();
 
       await expect(run).rejects.toBe(teardownFailure);
+      expectTerminalReleased();
+    });
+
+    it('should surface a render flush failure and still release the terminal', async () => {
+      const flushFailure = new Error('render flush exploded');
+      const tree = scriptFailingRender({ waitUntilRenderFlush: flushFailure });
+      const run = startRun();
+      await tree.waitForMount();
+      tree.exit();
+
+      await expect(run).rejects.toBe(flushFailure);
+      expect(tree.unmount).toHaveBeenCalledOnce();
       expectTerminalReleased();
     });
 

@@ -13,6 +13,7 @@ const SLASH_COMMAND_LABEL_KEYS: Readonly<Record<SlashCommand, string>> = {
   '/go': 'interactive.commands.go',
   '/issue': 'interactive.commands.issue',
   '/tell': 'interactive.commands.tell',
+  '/requeue': 'interactive.commands.requeue',
   '/retry': 'interactive.commands.retry',
   '/replay': 'interactive.commands.replay',
   '/cancel': 'interactive.commands.cancel',
@@ -49,6 +50,7 @@ export interface CommandAvailability {
   readonly enableSettingsCommands?: boolean;
   readonly formalSpec?: boolean;
   readonly enableTellCommand?: boolean;
+  readonly enableAssistantRetryCommands?: boolean;
   readonly enabledCommands?: readonly SlashCommand[];
 }
 
@@ -97,15 +99,32 @@ export const filterSlashCommands = (
     if (entry.command === SlashCommand.Tell && availability !== undefined && availability.enableTellCommand !== true) {
       return false;
     }
+    if (
+      entry.command === SlashCommand.Requeue
+      && availability?.enableAssistantRetryCommands !== true
+    ) {
+      return false;
+    }
     if (entry.command === SlashCommand.Setup && availability?.enableSetupCommand !== true) return false;
     if (entry.command === SlashCommand.Open && availability?.enableOpenCommand !== true) return false;
     if (INTERACTIVE_SETTING_COMMANDS.has(entry.command) && availability?.enableSettingsCommands !== true) return false;
     if (entry.command === SlashCommand.Verify && availability?.formalSpec !== true) return false;
     if (!availability) return true;
-    if (entry.command === SlashCommand.Retry && !availability.enableRetryCommand) return false;
+    if (
+      entry.command === SlashCommand.Retry
+      && availability.enableRetryCommand !== true
+      && availability.enableAssistantRetryCommands !== true
+    ) return false;
     if (entry.command === SlashCommand.Replay && !availability.hasPreviousOrder) return false;
     return true;
   });
-  const exact = matches.find((entry) => entry.command === lower);
-  return exact === undefined ? matches : [exact];
+  const labeledMatches = matches.map((entry) =>
+    entry.command === SlashCommand.Retry
+      && availability?.enableRetryCommand === true
+      && availability.enableAssistantRetryCommands !== true
+      ? { ...entry, labelKey: 'interactive.commands.retrySavedOrder' }
+      : entry,
+  );
+  const exact = labeledMatches.find((entry) => entry.command === lower);
+  return exact === undefined ? labeledMatches : [exact];
 };

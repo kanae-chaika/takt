@@ -11,6 +11,7 @@ const TUI_ENABLED_COMMANDS: readonly SlashCommand[] = [
   SlashCommand.Go,
   SlashCommand.Issue,
   SlashCommand.Tell,
+  SlashCommand.Requeue,
   SlashCommand.Retry,
   SlashCommand.Replay,
   SlashCommand.Cancel,
