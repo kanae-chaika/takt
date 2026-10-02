@@ -24,6 +24,7 @@ export interface LoopAnalysisJob {
   readonly sourceRunDirectory: string;
   readonly output: LoopAnalysisOutput;
   readonly parentPid: number;
+  readonly runtimeAssignment?: string;
   readonly branch?: string;
   readonly publicationMarkerPath?: string;
 }
@@ -155,9 +156,18 @@ function validateLoopAnalysisJob(value: unknown): LoopAnalysisJob {
   }
   const hasPublication = value.branch !== undefined
     || value.publicationMarkerPath !== undefined;
+  const hasRuntimeAssignment = Object.hasOwn(value, 'runtimeAssignment');
+  let runtimeAssignment: string | undefined;
+  if (hasRuntimeAssignment) {
+    if (typeof value.runtimeAssignment !== 'string') {
+      throw new Error('Loop analysis runtimeAssignment must be a string');
+    }
+    runtimeAssignment = value.runtimeAssignment;
+  }
   requireExactKeys(
     value,
-    hasPublication
+    [
+      ...(hasPublication
       ? [
           'branch',
           'output',
@@ -173,7 +183,9 @@ function validateLoopAnalysisJob(value: unknown): LoopAnalysisJob {
           'projectCwd',
           'sourceRunDirectory',
           'version',
-        ],
+        ]),
+      ...(hasRuntimeAssignment ? ['runtimeAssignment'] : []),
+    ],
     'Loop analysis job',
   );
   if (value.version !== LOOP_ANALYSIS_JOB_VERSION) {
@@ -197,6 +209,7 @@ function validateLoopAnalysisJob(value: unknown): LoopAnalysisJob {
       sourceRunDirectory,
       output: value.output,
       parentPid: Number(value.parentPid),
+      ...(runtimeAssignment === undefined ? {} : { runtimeAssignment }),
     };
   }
   if (value.output !== 'pr-comment') {
@@ -213,6 +226,7 @@ function validateLoopAnalysisJob(value: unknown): LoopAnalysisJob {
     sourceRunDirectory,
     output: value.output,
     parentPid: Number(value.parentPid),
+    ...(runtimeAssignment === undefined ? {} : { runtimeAssignment }),
     branch,
     publicationMarkerPath,
   };

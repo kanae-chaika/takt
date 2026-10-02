@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { stringify as stringifyYaml } from 'yaml';
 
 const mockedHome = vi.hoisted(() => ({ value: '' }));
 
@@ -856,5 +857,128 @@ describe('runtime-provider loader', () => {
 
   it('Given neither file present, When resolving, Then it returns undefined (C1)', () => {
     expect(resolveRuntimeProviderFile({ globalConfigDir: globalDir, projectConfigDir: projectDir })).toBeUndefined();
+  });
+
+  describe('explicit runtime assignment', () => {
+    function writeAssignmentRuntime(providerChanges: Record<string, unknown> = {}): void {
+      mkdirSync(globalDir, { recursive: true });
+      writeFileSync(join(globalDir, RUNTIME_PROVIDER_FILENAME), stringifyYaml({
+        version: 1,
+        provider: {
+          defaults: { profile: 'base' },
+          profiles: {
+            base: { provider: 'mock', model: 'base-model' },
+            cost: { provider: 'mock', model: 'cost-model' },
+            quality: { provider: 'codex', model: 'quality-model', options: { reasoning_effort: 'high' } },
+          },
+          targets: { personas: { reviewer: { profile: 'base' } } },
+          assignments: {
+            cost: { defaults: { profile: 'cost' }, targets: { tags: { cheap: { profile: 'cost' } } } },
+            quality: { defaults: { profile: 'quality' } },
+            'targets-only': { targets: { internal_agents: { selector: { profile: 'quality' } } } },
+          },
+          directories: { [dirname(projectDir)]: 'cost' },
+          ...providerChanges,
+        },
+        mcp: { servers: { tools: { command: 'test-tools' } }, defaults: { servers: ['tools'] } },
+        companion: { enabled: false },
+        loop_analysis: { enabled: true, output: 'file' },
+      }));
+    }
+
+    function select(runtimeAssignment: string) {
+      const input = { globalConfigDir: globalDir, projectConfigDir: projectDir, runtimeAssignment };
+      return resolveRuntimeProviderFile(input);
+    }
+
+    it('uses the explicit defaults and top-level targets instead of a matching directory assignment', () => {
+      writeAssignmentRuntime();
+
+      const selected = select('quality');
+
+      expect(selected?.provider?.defaults).toEqual({ profile: 'quality' });
+      expect(selected?.provider?.targets).toEqual({ personas: { reviewer: { profile: 'base' } } });
+    });
+
+    it('replaces all targets when the explicit assignment supplies targets', () => {
+      writeAssignmentRuntime({ directories: {} });
+
+      const selected = select('cost');
+
+      expect(selected?.provider?.defaults).toEqual({ profile: 'cost' });
+      expect(selected?.provider?.targets).toEqual({ tags: { cheap: { profile: 'cost' } } });
+    });
+
+    it('inherits top-level defaults for a targets-only selection without retaining directory defaults', () => {
+      writeAssignmentRuntime();
+
+      const selected = select('targets-only');
+
+      expect(selected?.provider?.defaults).toEqual({ profile: 'base' });
+      expect(selected?.provider?.targets).toEqual({ internal_agents: { selector: { profile: 'quality' } } });
+    });
+
+    it.each([
+      ['global-only', 'cost'],
+      ['project-only', 'quality'],
+      ['shared', 'quality'],
+    ])('selects %s after merging disjoint and same-name assignments', (name, profile) => {
+      writeAssignmentRuntime({ assignments: {
+        'global-only': { defaults: { profile: 'cost' } },
+        shared: { defaults: { profile: 'cost' }, targets: { tags: { old: { profile: 'cost' } } } },
+      }, directories: {} });
+      writeRuntimeYaml(projectDir, stringifyYaml({ version: 1, provider: {
+        defaults: { profile: 'base' },
+        assignments: {
+          'project-only': { defaults: { profile: 'quality' } },
+          shared: { defaults: { profile: 'quality' } },
+        },
+      } }).split('\n'));
+
+      const selected = select(name);
+
+      expect(selected?.provider?.defaults).toEqual({ profile });
+      expect(selected?.provider?.targets).toEqual({ personas: { reviewer: { profile: 'base' } } });
+      expect(Object.keys(selected?.provider?.assignments ?? {}).sort()).toEqual(['global-only', 'project-only', 'shared']);
+    });
+
+    it('keeps profiles, routing, MCP, companion and loop analysis common to every selection', () => {
+      writeAssignmentRuntime({ directories: {}, auto_routing: { strategy: 'balanced' } });
+      const unselected = resolveRuntimeProviderFile({ globalConfigDir: globalDir, projectConfigDir: projectDir });
+
+      const selected = select('quality');
+
+      expect(selected?.provider?.defaults).toEqual({ profile: 'quality' });
+      expect(selected?.provider?.profiles).toEqual(unselected?.provider?.profiles);
+      expect(selected?.provider?.auto_routing).toEqual(unselected?.provider?.auto_routing);
+      expect(selected?.mcp).toEqual(unselected?.mcp);
+      expect(selected?.companion).toEqual(unselected?.companion);
+      expect(selected?.loop_analysis).toEqual(unselected?.loop_analysis);
+    });
+
+    it.each(['typo', 'toString', '__proto__'])('rejects undefined name %s and reports the merged available names', (name) => {
+      writeAssignmentRuntime();
+      writeRuntimeYaml(projectDir, ['version: 1', 'provider:', '  defaults: { profile: base }',
+        '  assignments:', '    personal: { defaults: { profile: quality } }']);
+
+      expect(() => select(name)).toThrow(name);
+      for (const available of ['cost', 'quality', 'targets-only', 'personal']) {
+        expect(() => select(name)).toThrow(available);
+      }
+    });
+
+    it.each([
+      ['assignments omitted', { version: 1, provider: { defaults: { profile: 'base' }, profiles: { base: { provider: 'mock' } } } }],
+      ['assignments empty', { version: 1, provider: { defaults: { profile: 'base' }, profiles: { base: { provider: 'mock' } }, assignments: {} } }],
+      ['provider omitted', { version: 1 }],
+      ['provider empty', { version: 1, provider: {} }],
+      ['MCP only', { version: 1, mcp: { servers: { tools: { command: 'tools' } } } }],
+      ['file absent', undefined],
+    ])('rejects a selection with %s and explains that no assignments are defined', (_label, runtime) => {
+      if (runtime !== undefined) writeRuntimeYaml(globalDir, stringifyYaml(runtime).split('\n'));
+
+      expect(() => select('cost')).toThrow('cost');
+      expect(() => select('cost')).toThrow(/no.*assignment|assignment.*(?:none|not defined|undefined)|定義.*(?:ない|なし)/i);
+    });
   });
 });

@@ -22,6 +22,7 @@ import {
   type McpSection,
 } from './schema.js';
 import { validateMcpSectionReferences } from './mcp-schema.js';
+import { hasActiveProviderSection } from './mode.js';
 
 /** Load and validate a single runtime.yaml. Returns undefined when the file is absent or empty. */
 export function loadRuntimeProviderFileAt(filePath: string): RuntimeProviderFile | undefined {
@@ -47,6 +48,7 @@ export function loadRuntimeProviderFileAt(filePath: string): RuntimeProviderFile
 export interface ResolveRuntimeProviderInput {
   globalConfigDir: string;
   projectConfigDir: string;
+  runtimeAssignment?: string;
 }
 
 export type RuntimeProviderProfileOrigin = 'global' | 'project';
@@ -72,9 +74,7 @@ export function resolveRuntimeProviderFileWithOrigins(
   const merged = !global ? project : !project ? global : mergeRuntimeProviderFiles(global, project);
   const normalized = merged === undefined ? undefined : normalizeRuntimeProviderDirectories(merged);
   return {
-    runtimeFile: normalized === undefined
-      ? undefined
-      : applyDirectoryAssignment(normalized, input.projectConfigDir),
+    runtimeFile: selectRuntimeAssignment(normalized, input),
     profileOrigins,
   };
 }
@@ -216,41 +216,43 @@ function normalizeDirectoryPath(directory: string): string {
   return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
 }
 
-function applyDirectoryAssignment(
-  file: RuntimeProviderFile,
-  projectConfigDir: string,
-): RuntimeProviderFile {
-  const provider = file.provider;
-  if (provider?.directories === undefined) {
-    return file;
-  }
-
-  const assignments = provider.assignments ?? {};
-  for (const [directory, assignmentName] of Object.entries(provider.directories)) {
-    if (!Object.prototype.hasOwnProperty.call(assignments, assignmentName)) {
+function selectRuntimeAssignment(
+  file: RuntimeProviderFile | undefined,
+  input: ResolveRuntimeProviderInput,
+): RuntimeProviderFile | undefined {
+  const provider = file?.provider;
+  const assignments = provider?.assignments ?? {};
+  for (const [directory, assignmentName] of Object.entries(provider?.directories ?? {})) {
+    if (!Object.hasOwn(assignments, assignmentName)) {
       throw new Error(
         `runtime.yaml provider.directories["${directory}"] references unknown assignment "${assignmentName}"`,
       );
     }
   }
 
-  const projectDirectory = normalizeDirectoryPath(dirname(projectConfigDir));
-  const assignmentName = provider.directories[projectDirectory];
+  let assignmentName = input.runtimeAssignment;
+  if (assignmentName === undefined && provider?.directories !== undefined) {
+    const projectDirectory = normalizeDirectoryPath(dirname(input.projectConfigDir));
+    assignmentName = provider.directories[projectDirectory];
+  }
   if (assignmentName === undefined) {
     return file;
   }
-  const assignment = assignments[assignmentName];
-  if (assignment === undefined) {
-    throw new Error(`runtime.yaml provider.directories references unknown assignment "${assignmentName}"`);
+  const assignment = Object.hasOwn(assignments, assignmentName) ? assignments[assignmentName] : undefined;
+  if (
+    file === undefined || provider === undefined || assignment === undefined
+    || (input.runtimeAssignment !== undefined && !hasActiveProviderSection(file))
+  ) {
+    const names = Object.keys(assignments);
+    const available = names.length === 0
+      ? 'No assignments are defined.'
+      : `Available assignments: ${names.join(', ')}.`;
+    throw new Error(`Cannot select runtime assignment "${assignmentName}". ${available}`);
   }
 
   const selectedProvider = { ...provider };
   if (assignment.defaults !== undefined) {
     selectedProvider.defaults = assignment.defaults;
-  } else if (provider.defaults !== undefined) {
-    selectedProvider.defaults = provider.defaults;
-  } else {
-    delete selectedProvider.defaults;
   }
   if (assignment.targets !== undefined) {
     selectedProvider.targets = assignment.targets;

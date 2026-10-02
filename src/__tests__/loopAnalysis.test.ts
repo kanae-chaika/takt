@@ -27,8 +27,12 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: (...args: unknown[]) => mockSpawn(...args),
 }));
 
-vi.mock('../infra/config/runtime-provider/loader.js', () => ({
-  resolveRuntimeProviderFile: (...args: unknown[]) => mockResolveRuntimeProviderFile(...args),
+vi.mock('../infra/config/runtime-provider/invocation.js', () => ({
+  getInvocationRuntimeAssignment: () => undefined,
+  resolveInvocationRuntimeProviderFileWithOrigins: (...args: unknown[]) => ({
+    runtimeFile: mockResolveRuntimeProviderFile(...args),
+    profileOrigins: new Map(),
+  }),
 }));
 
 vi.mock('../infra/config/paths.js', () => ({

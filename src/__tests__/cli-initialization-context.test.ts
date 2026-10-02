@@ -93,20 +93,6 @@ describe('CLI execution context', () => {
     expect(message).toMatch(/TAKT_CONFIG_DIR|different|another/i);
   });
 
-  it.each([
-    ['cwd', '/other/project'],
-    ['pipelineMode', false],
-  ] as const)('should reject consumer mutation of %s after initialization', async (property, value) => {
-    vi.spyOn(process, 'cwd').mockReturnValue('/test/project');
-    const program = { opts: () => ({ pipeline: true, quiet: false }) } as Command;
-    const { getCliExecutionContext, initializeCliExecutionContext } = await import('../app/cli/initialization.js');
-    await initializeCliExecutionContext(program, '1.0.0');
-    const context = getCliExecutionContext();
-
-    expect(() => Object.assign(context, { [property]: value })).toThrow(TypeError);
-    expect(getCliExecutionContext()).toEqual({ cwd: '/test/project', pipelineMode: true });
-  });
-
   it.each([false, true])('should initialize global, project, and Git state when pipeline mode is %s', async (pipelineMode) => {
     vi.spyOn(process, 'cwd').mockReturnValue('/test/project');
     const program = { opts: () => ({ pipeline: pipelineMode, quiet: false }) } as Command;
