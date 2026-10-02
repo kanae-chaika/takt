@@ -54,7 +54,6 @@ export interface InteractiveUIText {
   cancelled: string;
   acceptNoAssistant: string;
   retryNoOrder: string;
-  retryUnavailable: string;
   pasteImageUnavailable: string;
 }
 
