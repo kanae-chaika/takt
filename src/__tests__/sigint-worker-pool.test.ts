@@ -156,10 +156,12 @@ describe('worker pool: abort signal propagation', () => {
     expect(capturedSignal!.aborted).toBe(true);
   });
 
-  it('should clean OpenCode resources before the worker pool force-exits', async () => {
+  it.each(['run', 'watch'] as const)('should clean OpenCode resources before the %s worker pool force-exits', async (mode) => {
     const tasks = [createTask('forced-task')];
     const runner = createMockTaskRunner();
     let markStarted!: () => void;
+    let finishTask!: (value: boolean) => void;
+    let taskSignal: AbortSignal | undefined;
     const started = new Promise<void>((resolve) => {
       markStarted = resolve;
     });
@@ -167,20 +169,24 @@ describe('worker pool: abort signal propagation', () => {
     mockExecuteRunTaskAndComplete.mockImplementation(
       (_task: unknown, _runner: unknown, _cwd: unknown, _opts: unknown, parallelOpts: { abortSignal?: AbortSignal }) => {
         markStarted();
-        return new Promise((resolve) => {
-          parallelOpts?.abortSignal?.addEventListener('abort', () => resolve(true), { once: true });
+        taskSignal = parallelOpts.abortSignal;
+        return new Promise<boolean>((resolve) => {
+          finishTask = resolve;
         });
       },
     );
 
-    const execution = runWithWorkerPool(runner as never, tasks, 1, '/cwd', undefined, undefined, 50);
+    const execution = runWithWorkerPool(runner as never, tasks, 1, '/cwd', undefined, undefined, 50, mode);
     await started;
     const listeners = process.rawListeners('SIGINT') as Array<() => void>;
     const handler = listeners[listeners.length - 1]!;
     handler();
+    expect(taskSignal?.aborted).toBe(mode === 'run');
+    expect(mockForceExitAfterOpenCodeCleanup).not.toHaveBeenCalled();
     handler();
 
     expect(mockForceExitAfterOpenCodeCleanup).toHaveBeenCalledOnce();
+    finishTask(true);
     await execution;
   });
 
