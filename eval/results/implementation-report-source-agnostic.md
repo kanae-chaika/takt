@@ -45,10 +45,17 @@
 
 対象の保存されたraw turnは全72件ともツール項目なし。graderを含めた今回の専用cwdの実session記録も監査し、対象72回・grader72回すべて `gpt-6-sol` / `high` / `read-only`、ツール呼び出し0件だった。`runtime-trace-audit.json` はこれらの情報と実行プロンプトhashだけを保持し、認証情報・ユーザー識別子・session ID・raw sessionはコピーしていない。fixtureの固定名レポートは読まれていない。
 
-凍結した `before-ja.frozen.yaml`、`before-en.frozen.yaml`、`after-ja.frozen.yaml`、`after-en.frozen.yaml` は入力をインラインで保持し、保存済みプロンプトの絶対パスを参照する。ローカルで保存した条件を再実行する例:
+凍結した config・プロンプト・manifest は [リポジトリ内の評価入力](implementation-report-source-agnostic/README.md) に保存した。初版比較は `initial-comparison/`、混在表評価は `mixed-planning/`、最終r1の6ケース回帰は `final-regression/` に分けている。通常 suite の `low` は維持し、専用 config の対象・grader を `gpt-6-sol` / `high` に固定した。入力とrubricはインラインで保持し、configのプロンプト参照と実行cwdだけを相対化している。プロンプト本文と既存hashは評価時のまま保持する。
+
+リポジトリのルートで依存を導入・buildした後、最終r1の英語6ケースを同じ条件で再実行する例:
 
 ```sh
-npm exec -- promptfoo eval -c /tmp/pr1652-source-agnostic-eval-gpt6sol-20261002/after-en.frozen.yaml --no-cache --repeat 3 --max-concurrency 2 --output /tmp/implementation-report-source-agnostic-rerun.json
+npm run eval:prompts:prepare -- implementation-report-contract-traceability implementation-report-contract-traceability-en
+mkdir -p eval/.results/implementation-report-source-agnostic
+PROMPTFOO_CONFIG_DIR=.tmp/promptfoo npm exec -- promptfoo eval \
+  -c eval/results/implementation-report-source-agnostic/final-regression/final-en.frozen.yaml \
+  --no-cache --repeat 3 --max-concurrency 2 \
+  --output eval/.results/implementation-report-source-agnostic/final-en.rerun.json
 ```
 
 この比較は提示済み作業結果からのPhase 2報告を測る。実装実行、Phase 1の計画取得、workflow全体の成功率は測定しない。各ケース3反復・単一モデルであり、一般的な失敗率を推定しない。
@@ -118,3 +125,9 @@ r1の全6応答の契約表を直接確認し、`CTR-01`～`CTR-03` が各1行�
 最新lockfile準拠の `npm ci --ignore-scripts` 後、build・lint、unit 417ファイル / 6,734件、light IT 164ファイル / 2,715件、eval prepare/provider/registry契約28件、OpenCode v1 probe 11件が合格した。mock E2E smokeは6ファイル / 19件合格、既存のGitHub issue連携1ファイル / 1件はskipだった。差分の空白検査も合格した。
 
 OpenCode probeの初回11件はPATH上のv2.0.21 CLIにより起動待ちtimeoutとなった。隔離環境でv2の起動stdoutを直接確認し、既存v1 SDKが待つ成功出力との不一致を特定した。文書にある検証済みv1 CLI 1.18.2を専用 `/tmp/pr1652-opencode-v1-cli-20261002/` へ導入し、必要なpostinstallを明示実行して実バージョンを確認後、同じprobe全11件が終了コード0で合格した。グローバルCLI・repo lockfile・probeコードは変更していない。失敗記録と成功記録は `/tmp/pr1652-merge-main-opencode-probe*.log` に保持する。既存の採点揺れと証拠採用境界は引き続き未解決であり、今回の統合では仕様判断を行わない。
+
+## CodeRabbit対応後の入力保存検証
+
+2026-10-02、3評価の凍結入力をリポジトリへ保存した。10 config・40ケースについて元の成果物との入力・rubric・provider設定の一致と、保存済み本文・facet・入力・rubric・記録済み実行プロンプトのhashを確認した。各configはpromptfooの設定検証を通過し、別ディレクトリへコピーしてもプロンプトと実行cwdを相対パスで解決できた。通常suiteの日英target・graderのeffortは `low` のまま。実モデル評価と再採点は行っていない。
+
+lockfileと異なるPiが導入されていたため依存を再導入した後、build・lint、unit 417ファイル / 6,734件、light IT 164ファイル / 2,715件、eval契約44件、mock E2E smoke 19件（既存skip 1件）が合格した。OpenCode v1 probeは外側sandboxのローカルポート制限で初回起動に失敗し、同じ検証を制限外で再実行して11件合格した。保存済みプロンプト末尾の空行は元のhashを維持するため保持し、それ以外の差分空白検査も合格した。
