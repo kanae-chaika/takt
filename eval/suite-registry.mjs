@@ -158,7 +158,7 @@ const EXECUTION_OVERRIDES = {
     defaultEligible: false,
     credentials: ['codex'],
     cost: 'standard',
-    reason: '英語の実Phase2出力を日本語と同じ3条件で明示的に比較する',
+    reason: '英語の実Phase2出力を日本語と同じ契約行・証拠不足・計画の受け渡し条件で明示的に比較する',
   },
   'interactive-topic-boundary': {
     defaultEligible: false,

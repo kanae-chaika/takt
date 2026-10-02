@@ -404,7 +404,7 @@ remain excluded.
 | `scope-architecture-search{,-none,-unrelated}` | peer-review / arch-review | scope-architecture-search | whether the same shared instruction discovers an unhinted second implementation and avoids an unrelated defect with relevant, absent, or unrelated Policy/Knowledge composition |
 | `scope-architecture-boundary` | peer-review / arch-review | scope-architecture-boundary | whether review recognizes an existing domain/I/O boundary on its first implementation without speculative extension points |
 | `implement-contract-traceability` | default / implement | implement-contract-traceability | whether implementation preserves named contract identities from plan and tests |
-| `implementation-report-contract-traceability` | default / implementation report | implement-contract-traceability | whether the report preserves the same contract identities and evidence |
+| `implementation-report-contract-traceability` / `implementation-report-contract-traceability-en` | default / implementation report (Japanese / English) | implement-contract-traceability | whether the report preserves defined completion-contract identities and evidence without promoting requirement, scope, or impact-path rows to extra contracts, accepts arbitrary or numbered report names and conversation handoffs, and distinguishes missing evidence from an absent ledger or discoveries that never occurred |
 | `follow-up-review-repair-regression` | peer-review / follow-up coding-review | follow-up-review-repair-regression | whether follow-up review independently falsifies completion claims, distinguishes repair-induced defects from adjacent omissions, and enumerates distinct reachable terminal outcomes; measured on Opus, Luna Max, and Sol High |
 | `follow-up-testing-review-repair-regression` | peer-review / follow-up testing-review -> review-adjudication | follow-up-review-repair-regression | whether review-adjudication recovers in-perspective omissions, verifies reviewer evidence, keeps regression detection within the selected repair scope, and excludes adjacent or structure-freezing test expansion; measured on Opus 5, Luna Max, and Sol High |
 | `review-adjudication` | peer-review / review-adjudication | review-adjudication | whether adjudication separates technical validity from the current remediation scope, keeps required same-cause paths and diff-induced regressions in scope, and excludes even severe horizontal improvements from the fix plan |
@@ -419,6 +419,8 @@ remain excluded.
 | `fix-verification-preserved-condition` | review-remediation / fix-verifier | fix-verification-preserved-condition | whether completion verification marks a repair incomplete when it breaks an existing condition that the plan requires preserving |
 
 GUI設計の比較例、採点、旧・新比較の手順は [frontend-design.md](frontend-design.md) を参照。
+
+実装報告の計画受け渡しに関する日英比較は [評価記録](results/implementation-report-source-agnostic.md) を参照。任意名の計画で固定名の原文を要求する英語の失敗は初版candidateで再現しなかったが、総合合格数は34/36から34/36で、既存fixtureの直接証拠に対する採点境界の揺れが残る。独立レビュー後に追加した混在表のheldoutケースは、この初版比較に含まれない。
 
 The `coding` suite requires both Claude and Codex CLI logins and is excluded
 from the default suite run. Invoke it explicitly with
