@@ -54,6 +54,7 @@ program
     .choices(['cost', 'balanced', 'performance']))
   .option('--model <name>', 'Override agent model')
   .option('--runtime-assignment <name>', 'Select a named runtime provider assignment for this invocation')
+  .option('--runtime-file <path>', 'Select a runtime provider configuration file for this invocation')
   .option('-t, --task <string>', 'Task content (as alternative to issue reference)')
   .option('--pipeline', 'Pipeline mode: non-interactive, no worktree, direct branch creation')
   .option('--skip-git', 'Skip branch creation, commit, and push (pipeline mode)')

@@ -36,9 +36,9 @@ export async function initializeCliExecutionContext(program: Command, cliVersion
   const rootOpts = program.opts();
   const pipelineMode = rootOpts.pipeline === true;
 
-  prepareRuntimeAssignmentInvocation(cwd, rootOpts.runtimeAssignment);
+  prepareRuntimeAssignmentInvocation(cwd, rootOpts.runtimeAssignment, rootOpts.runtimeFile);
   await initGlobalDirs({ nonInteractive: pipelineMode });
-  initializeRuntimeAssignmentInvocation(cwd, rootOpts.runtimeAssignment);
+  initializeRuntimeAssignmentInvocation(cwd, rootOpts.runtimeAssignment, rootOpts.runtimeFile);
   initProjectDirs(cwd);
   initGitProvider(cwd);
 

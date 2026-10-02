@@ -66,10 +66,16 @@ describe('runtime assignment invocation', () => {
     };
   }
 
-  async function initialize(runtimeAssignment?: string): Promise<void> {
+  async function initialize(runtimeAssignment?: string, runtimeFilePath?: string): Promise<void> {
     const { initializeCliExecutionContext } = await import('../app/cli/initialization.js');
-    const command = new Command().option('--runtime-assignment <name>');
-    command.parseOptions(runtimeAssignment === undefined ? [] : ['--runtime-assignment', runtimeAssignment]);
+    const command = new Command()
+      .option('--runtime-assignment <name>')
+      .option('--runtime-file <path>');
+    const args = [
+      ...(runtimeAssignment === undefined ? [] : ['--runtime-assignment', runtimeAssignment]),
+      ...(runtimeFilePath === undefined ? [] : ['--runtime-file', runtimeFilePath]),
+    ];
+    command.parseOptions(args);
     await initializeCliExecutionContext(command, '1.0.0');
   }
 
@@ -212,6 +218,73 @@ describe('runtime assignment invocation', () => {
     for (const result of results) expect(result).toMatchObject({
       provider: 'codex', model: 'cost-model', providerOptions: { codex: { reasoningEffort: 'low' } },
     });
+  });
+
+  it('uses --runtime-file instead of project runtime.yaml across runtime resolvers and the analysis worker', async () => {
+    const runtimeFilePath = 'runtime.cost.yaml';
+    const selectedRuntimeYaml = stringifyYaml({
+      version: 1,
+      companion: { enabled: false },
+      loop_analysis: { enabled: true, output: 'file' },
+      provider: {
+        defaults: { profile: 'selected' },
+        profiles: { selected: { provider: 'mock', model: 'selected-model' } },
+        targets: { internal_agents: {
+          selector: { profile: 'selected' },
+          assistant: { profile: 'selected' },
+        } },
+      },
+    });
+    writeFileSync(join(projectCwd, runtimeFilePath), selectedRuntimeYaml);
+
+    await initialize(undefined, runtimeFilePath);
+
+    const { getInvocationRuntimeFilePath } = await import('../infra/config/runtime-provider/invocation.js');
+    expect(getInvocationRuntimeFilePath()).toBe(join(projectCwd, runtimeFilePath));
+    const { resolveSelectorProviderForProject } = await import('../infra/config/selectorProviderResolution.js');
+    const { resolveAssistantProviderModel } = await import('../features/interactive/assistantConfig.js');
+    const { resolveNonWorkflowProviderModel } = await import('../infra/config/nonWorkflowProvider.js');
+    const { resolveAuxiliaryProviderEnvironment } = await import('../infra/config/runtime-provider/provider-environment.js');
+    const results = [
+      await workflowEnvironment(),
+      resolveSelectorProviderForProject(projectCwd),
+      resolveAssistantProviderModel(projectCwd),
+      resolveNonWorkflowProviderModel(projectCwd),
+      resolveAuxiliaryProviderEnvironment(projectCwd, { name: 'test-workflow' }),
+    ];
+    for (const result of results) expect(result).toMatchObject({ provider: 'mock', model: 'selected-model' });
+
+    const { createLoopAnalysisScheduler } = await import('../features/tasks/execute/loopAnalysis.js');
+    const { readLoopAnalysisJob } = await import('../features/tasks/execute/loopAnalysisJob.js');
+    const sourceRunDirectory = join(projectDir, 'runs', 'selected-runtime');
+    mkdirSync(sourceRunDirectory, { recursive: true });
+    createLoopAnalysisScheduler({ projectCwd })?.(sourceRunDirectory);
+    const jobDirectory = join(sourceRunDirectory, '.takt-report-internal', 'loop-analysis');
+    const jobs = readdirSync(jobDirectory).filter((file) => file.endsWith('.job.json'));
+    expect(jobs).toHaveLength(1);
+    expect(readLoopAnalysisJob(join(jobDirectory, jobs[0]!)).runtimeFilePath)
+      .toBe(join(projectCwd, runtimeFilePath));
+    expect(readFileSync(join(projectCwd, runtimeFilePath), 'utf8')).toBe(selectedRuntimeYaml);
+
+    await initialize();
+    expect(getInvocationRuntimeFilePath()).toBeUndefined();
+    expect(await workflowEnvironment()).toMatchObject({ provider: 'mock', model: 'directory-model' });
+  });
+
+  it('rejects a missing --runtime-file before setup instead of falling back to project runtime.yaml', async () => {
+    const selectedFile = join(projectCwd, 'missing-runtime.yaml');
+    const { initializeCliExecutionContext } = await import('../app/cli/initialization.js');
+    const action = vi.fn();
+    const command = new Command().option('--runtime-file <path>')
+      .hook('preAction', (root) => initializeCliExecutionContext(root, '1.0.0')).action(action);
+
+    await expect(command.parseAsync(['--runtime-file', selectedFile], { from: 'user' }))
+      .rejects.toThrow(new RegExp(`${selectedFile}.*(?:ENOENT|no such file)`, 'i'));
+
+    expect(action).not.toHaveBeenCalled();
+    expect(doubles.initGlobalDirs).not.toHaveBeenCalled();
+    expect(doubles.initProjectDirs).not.toHaveBeenCalled();
+    expect(doubles.initGitProvider).not.toHaveBeenCalled();
   });
 
   it('hands the invocation selection to the detached analysis job', async () => {

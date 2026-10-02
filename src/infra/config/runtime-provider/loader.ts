@@ -1,10 +1,10 @@
 /**
  * Loader for the runtime.yaml provider configuration (issue #1136).
  *
- * Reads the two fixed paths (`~/.takt/runtime.yaml`, `<project>/.takt/runtime.yaml`) with
- * schema validation. Directories are passed explicitly from above — there is no implicit
- * homedir/cwd fallback and no `runtime_file` indirection. When both files exist, project
- * wins: same-name profiles are replaced wholesale (no field-level merge, per order.md:37),
+ * Reads the global and project runtime configuration paths with schema validation. Directories
+ * are passed explicitly from above — there is no implicit homedir/cwd fallback. A selected
+ * runtime file replaces the project path while retaining the global layer. When both files
+ * exist, project wins: same-name profiles are replaced wholesale (no field-level merge, per order.md:37),
  * disjoint profiles are retained, and the other sections take the project value when present.
  * Named assignments and directory mappings are resolved after the two layers are merged.
  */
@@ -29,7 +29,28 @@ export function loadRuntimeProviderFileAt(filePath: string): RuntimeProviderFile
   if (!existsSync(filePath)) {
     return undefined;
   }
-  const raw: unknown = parseYaml(readFileSync(filePath, 'utf-8'));
+  return parseRuntimeProviderFile(filePath, readFileSync(filePath, 'utf-8'));
+}
+
+function loadSelectedRuntimeProviderFileAt(filePath: string): RuntimeProviderFile | undefined {
+  let source: string;
+  try {
+    source = readFileSync(filePath, 'utf-8');
+  } catch (error) {
+    throw new Error(`Unable to read runtime file "${filePath}": ${errorMessage(error)}`, { cause: error });
+  }
+  try {
+    return parseRuntimeProviderFile(filePath, source);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes(filePath)) {
+      throw error;
+    }
+    throw new Error(`Invalid runtime file "${filePath}": ${errorMessage(error)}`, { cause: error });
+  }
+}
+
+function parseRuntimeProviderFile(filePath: string, source: string): RuntimeProviderFile | undefined {
+  const raw: unknown = parseYaml(source);
   // An empty document parses to null; treat it as "not configured" rather than a shape error.
   if (raw === null || raw === undefined) {
     return undefined;
@@ -45,10 +66,16 @@ export function loadRuntimeProviderFileAt(filePath: string): RuntimeProviderFile
   return result.data;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export interface ResolveRuntimeProviderInput {
   globalConfigDir: string;
   projectConfigDir: string;
   runtimeAssignment?: string;
+  /** Selected file replacing the project runtime.yaml; relative paths use the current directory. */
+  runtimeFilePath?: string;
 }
 
 export type RuntimeProviderProfileOrigin = 'global' | 'project';
@@ -63,7 +90,9 @@ export function resolveRuntimeProviderFileWithOrigins(
   input: ResolveRuntimeProviderInput,
 ): ResolvedRuntimeProviderFileWithOrigins {
   const global = loadRuntimeProviderFileAt(join(input.globalConfigDir, RUNTIME_PROVIDER_FILENAME));
-  const project = loadRuntimeProviderFileAt(join(input.projectConfigDir, RUNTIME_PROVIDER_FILENAME));
+  const project = input.runtimeFilePath === undefined
+    ? loadRuntimeProviderFileAt(join(input.projectConfigDir, RUNTIME_PROVIDER_FILENAME))
+    : loadSelectedRuntimeProviderFileAt(resolve(input.runtimeFilePath));
   const profileOrigins = new Map<string, RuntimeProviderProfileOrigin>();
   for (const name of Object.keys(global?.provider?.profiles ?? {})) {
     profileOrigins.set(name, 'global');

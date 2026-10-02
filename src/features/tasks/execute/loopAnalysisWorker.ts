@@ -30,7 +30,7 @@ const PUBLICATION_SETTLEMENT_TIMEOUT_MS = 10 * 60_000;
 
 export async function executeLoopAnalysisJob(jobPath: string): Promise<void> {
   const job = readLoopAnalysisJob(jobPath);
-  initializeRuntimeAssignmentInvocation(job.projectCwd, job.runtimeAssignment);
+  initializeRuntimeAssignmentInvocation(job.projectCwd, job.runtimeAssignment, job.runtimeFilePath);
   const sourceRunDirectory = resolve(job.sourceRunDirectory);
   const sourceRunSlug = basename(sourceRunDirectory);
   const result = await runLoopAnalysisWorkflowExecution({

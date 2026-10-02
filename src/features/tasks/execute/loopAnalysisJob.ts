@@ -25,6 +25,7 @@ export interface LoopAnalysisJob {
   readonly output: LoopAnalysisOutput;
   readonly parentPid: number;
   readonly runtimeAssignment?: string;
+  readonly runtimeFilePath?: string;
   readonly branch?: string;
   readonly publicationMarkerPath?: string;
 }
@@ -157,12 +158,17 @@ function validateLoopAnalysisJob(value: unknown): LoopAnalysisJob {
   const hasPublication = value.branch !== undefined
     || value.publicationMarkerPath !== undefined;
   const hasRuntimeAssignment = Object.hasOwn(value, 'runtimeAssignment');
+  const hasRuntimeFilePath = Object.hasOwn(value, 'runtimeFilePath');
   let runtimeAssignment: string | undefined;
+  let runtimeFilePath: string | undefined;
   if (hasRuntimeAssignment) {
     if (typeof value.runtimeAssignment !== 'string') {
       throw new Error('Loop analysis runtimeAssignment must be a string');
     }
     runtimeAssignment = value.runtimeAssignment;
+  }
+  if (hasRuntimeFilePath) {
+    runtimeFilePath = requireAbsoluteString(value.runtimeFilePath, 'runtimeFilePath');
   }
   requireExactKeys(
     value,
@@ -185,6 +191,7 @@ function validateLoopAnalysisJob(value: unknown): LoopAnalysisJob {
           'version',
         ]),
       ...(hasRuntimeAssignment ? ['runtimeAssignment'] : []),
+      ...(hasRuntimeFilePath ? ['runtimeFilePath'] : []),
     ],
     'Loop analysis job',
   );
@@ -210,6 +217,7 @@ function validateLoopAnalysisJob(value: unknown): LoopAnalysisJob {
       output: value.output,
       parentPid: Number(value.parentPid),
       ...(runtimeAssignment === undefined ? {} : { runtimeAssignment }),
+      ...(runtimeFilePath === undefined ? {} : { runtimeFilePath }),
     };
   }
   if (value.output !== 'pr-comment') {
@@ -227,6 +235,7 @@ function validateLoopAnalysisJob(value: unknown): LoopAnalysisJob {
     output: value.output,
     parentPid: Number(value.parentPid),
     ...(runtimeAssignment === undefined ? {} : { runtimeAssignment }),
+    ...(runtimeFilePath === undefined ? {} : { runtimeFilePath }),
     branch,
     publicationMarkerPath,
   };

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolve } from 'node:path';
 import type { ResolvedRuntimeProviderFileWithOrigins } from '../infra/config/runtime-provider/loader.js';
 
 const doubles = vi.hoisted(() => ({ resolveFile: vi.fn() }));
@@ -13,6 +14,7 @@ vi.mock('../infra/config/paths.js', () => ({
 
 import {
   getInvocationRuntimeAssignment,
+  getInvocationRuntimeFilePath,
   initializeRuntimeAssignmentInvocation,
   resolveInvocationRuntimeProviderFileWithOrigins,
 } from '../infra/config/runtime-provider/invocation.js';
@@ -67,6 +69,20 @@ describe('runtime assignment invocation context', () => {
     expect(doubles.resolveFile).toHaveBeenCalledWith({ ...otherGlobal, runtimeAssignment: 'cost' });
   });
 
+  it('resolves and retains a relative runtime file path for the invocation', () => {
+    doubles.resolveFile.mockReturnValue(resolvedFile('selected-model'));
+    initializeRuntimeAssignmentInvocation('/project', undefined, 'configs/runtime.cost.yaml');
+
+    expect(getInvocationRuntimeAssignment()).toBeUndefined();
+    expect(getInvocationRuntimeFilePath()).toBe(resolve('/project', 'configs/runtime.cost.yaml'));
+    expect(doubles.resolveFile).toHaveBeenCalledWith({
+      ...paths,
+      runtimeFilePath: resolve('/project', 'configs/runtime.cost.yaml'),
+    });
+    expect(resolveInvocationRuntimeProviderFileWithOrigins(paths).runtimeFile?.provider?.profiles?.selected?.model)
+      .toBe('selected-model');
+  });
+
   it('propagates a missing selection at another project boundary', () => {
     doubles.resolveFile.mockReturnValue(resolvedFile('cost-model'));
     initializeRuntimeAssignmentInvocation('/project', 'cost');
@@ -85,6 +101,7 @@ describe('runtime assignment invocation context', () => {
       .mockReturnValueOnce(resolvedFile('next-model'));
 
     expect(getInvocationRuntimeAssignment()).toBeUndefined();
+    expect(getInvocationRuntimeFilePath()).toBeUndefined();
     expect(resolveInvocationRuntimeProviderFileWithOrigins(paths).runtimeFile?.provider?.profiles?.selected?.model)
       .toBe('directory-model');
     expect(resolveInvocationRuntimeProviderFileWithOrigins(paths).runtimeFile?.provider?.profiles?.selected?.model)

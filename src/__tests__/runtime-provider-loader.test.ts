@@ -38,6 +38,11 @@ function writeRuntimeYaml(dir: string, lines: string[]): void {
   writeFileSync(join(dir, RUNTIME_PROVIDER_FILENAME), lines.join('\n'), 'utf-8');
 }
 
+function writeRuntimeFile(filePath: string, lines: string[]): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, lines.join('\n'), 'utf-8');
+}
+
 function companionReviewMode(value: unknown): string | undefined {
   return (value as { review_mode?: string } | undefined)?.review_mode;
 }
@@ -64,6 +69,89 @@ describe('runtime-provider loader', () => {
   it('Given a missing file, When loading a single path, Then it returns undefined (C1)', () => {
     mkdirSync(globalDir, { recursive: true });
     expect(loadRuntimeProviderFileAt(join(globalDir, RUNTIME_PROVIDER_FILENAME))).toBeUndefined();
+  });
+
+  it('uses the selected runtime file instead of project runtime.yaml while retaining global settings', () => {
+    writeRuntimeYaml(globalDir, [
+      'version: 1',
+      'provider:',
+      '  defaults:',
+      '    profile: shared',
+      '  profiles:',
+      '    shared:',
+      '      provider: mock',
+      '      model: global-shared',
+      '    global-only:',
+      '      provider: mock',
+      '      model: retained-global',
+    ]);
+    writeRuntimeYaml(projectDir, [
+      'version: 1',
+      'provider:',
+      '  profiles:',
+      '    project-only:',
+      '      provider: mock',
+      '      model: ignored-project',
+    ]);
+    const selectedFile = join(root, 'configs', 'runtime.cost.yaml');
+    writeRuntimeFile(selectedFile, [
+      'version: 1',
+      'provider:',
+      '  defaults:',
+      '    profile: selected',
+      '  profiles:',
+      '    shared:',
+      '      provider: mock',
+      '      model: selected-shared',
+      '    selected:',
+      '      provider: mock',
+      '      model: selected-model',
+    ]);
+
+    const resolved = resolveRuntimeProviderFileWithOrigins({
+      globalConfigDir: globalDir,
+      projectConfigDir: projectDir,
+      runtimeFilePath: selectedFile,
+    });
+
+    expect(resolved.runtimeFile?.provider?.defaults).toEqual({ profile: 'selected' });
+    expect(resolved.runtimeFile?.provider?.profiles?.shared?.model).toBe('selected-shared');
+    expect(resolved.runtimeFile?.provider?.profiles?.['global-only']?.model).toBe('retained-global');
+    expect(resolved.runtimeFile?.provider?.profiles?.selected?.model).toBe('selected-model');
+    expect(resolved.runtimeFile?.provider?.profiles?.['project-only']).toBeUndefined();
+    expect(resolved.profileOrigins.get('selected')).toBe('project');
+    expect(resolved.profileOrigins.get('global-only')).toBe('global');
+  });
+
+  it('fails with the selected path and read reason without falling back to project runtime.yaml', () => {
+    writeRuntimeYaml(projectDir, [
+      'version: 1',
+      'provider:',
+      '  defaults:',
+      '    profile: project',
+      '  profiles:',
+      '    project:',
+      '      provider: mock',
+      '      model: project-model',
+    ]);
+    const selectedFile = join(root, 'missing', 'runtime.yaml');
+
+    expect(() => resolveRuntimeProviderFileWithOrigins({
+      globalConfigDir: globalDir,
+      projectConfigDir: projectDir,
+      runtimeFilePath: selectedFile,
+    })).toThrow(new RegExp(`${selectedFile}.*(?:ENOENT|no such file)`, 'i'));
+  });
+
+  it('fails with the selected path and validation reason for invalid YAML', () => {
+    const selectedFile = join(root, 'invalid-runtime.yaml');
+    writeFileSync(selectedFile, 'version: [\n', 'utf-8');
+
+    expect(() => resolveRuntimeProviderFileWithOrigins({
+      globalConfigDir: globalDir,
+      projectConfigDir: projectDir,
+      runtimeFilePath: selectedFile,
+    })).toThrow(new RegExp(`Invalid runtime file "${selectedFile}"`, 'i'));
   });
 
   it('Given an invalid runtime.yaml, When loading, Then it throws naming the failing file path (schema validation, C1)', () => {

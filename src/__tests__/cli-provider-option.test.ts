@@ -75,7 +75,7 @@ describe('CLI --provider option', () => {
     { entry: 'run', args: ['run'] },
     { entry: 'watch', args: ['watch'] },
     { entry: 'list', args: ['list', '--non-interactive'] },
-  ])('accepts a named runtime assignment through $entry', async ({ args }) => {
+  ])('accepts runtime selection options through $entry', async ({ args }) => {
     vi.resetModules();
     const { program: isolatedProgram } = await import('../app/cli/program.js');
     await import('../app/cli/commands.js');
@@ -84,9 +84,14 @@ describe('CLI --provider option', () => {
     for (const command of isolatedProgram.commands) command.action(action);
     isolatedProgram.configureOutput({ writeErr: vi.fn() });
 
-    await isolatedProgram.parseAsync(['node', 'takt', ...args, '--runtime-assignment', 'personal-quality']);
+    await isolatedProgram.parseAsync([
+      'node', 'takt', ...args,
+      '--runtime-assignment', 'personal-quality',
+      '--runtime-file', '.takt/runtime.quality.yaml',
+    ]);
 
     expect(isolatedProgram.opts().runtimeAssignment).toBe('personal-quality');
+    expect(isolatedProgram.opts().runtimeFile).toBe('.takt/runtime.quality.yaml');
     expect(action).toHaveBeenCalledTimes(1);
   });
 });

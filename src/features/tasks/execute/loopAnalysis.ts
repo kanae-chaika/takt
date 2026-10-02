@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
   getInvocationRuntimeAssignment,
+  getInvocationRuntimeFilePath,
   resolveInvocationRuntimeProviderFileWithOrigins,
 } from '../../../infra/config/runtime-provider/invocation.js';
 import {
@@ -44,6 +45,7 @@ export function createLoopAnalysisScheduler(
     return undefined;
   }
   const runtimeAssignment = getInvocationRuntimeAssignment();
+  const runtimeFilePath = getInvocationRuntimeFilePath();
 
   return (sourceRunDirectory): void => {
     if (!claimLoopAnalysisDispatch(sourceRunDirectory)) {
@@ -60,6 +62,7 @@ export function createLoopAnalysisScheduler(
       output: loopAnalysis.output,
       parentPid: process.pid,
       ...(runtimeAssignment === undefined ? {} : { runtimeAssignment }),
+      ...(runtimeFilePath === undefined ? {} : { runtimeFilePath }),
       ...(publication === undefined ? {} : publication),
     };
     writeLoopAnalysisJob(paths.jobPath, job);

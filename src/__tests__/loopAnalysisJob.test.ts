@@ -67,6 +67,8 @@ describe('loop analysis private job', () => {
     ['a non-string assignment', { runtimeAssignment: 1 }, /runtimeAssignment/i],
     ['a null assignment', { runtimeAssignment: null }, /runtimeAssignment/i],
     ['an explicitly undefined assignment', { runtimeAssignment: undefined }, /runtimeAssignment/i],
+    ['a relative runtime file path', { runtimeFilePath: 'runtime.cost.yaml' }, /absolute path/i],
+    ['an empty runtime file path', { runtimeFilePath: '' }, /runtimeFilePath/i],
     ['a non-positive parent PID', { parentPid: 0 }, /positive integer/i],
     ['only a publication branch', { output: 'pr-comment', branch: 'takt/source' }, /unknown or missing fields/i],
     ['only a publication marker', { output: 'pr-comment', publicationMarkerPath: '/project/publication.json' }, /unknown or missing fields/i],
@@ -156,6 +158,22 @@ describe('loop analysis private job', () => {
 
       expect(() => readLoopAnalysisJob(paths.jobPath)).toThrow(/runtimeAssignment/i);
     });
+  });
+
+  it('preserves an absolute runtime file path through private job storage and restoration', () => {
+    const paths = createPaths();
+    const job: LoopAnalysisJob = {
+      version: 1,
+      projectCwd: paths.projectCwd,
+      sourceRunDirectory: paths.sourceRunDirectory,
+      output: 'file',
+      parentPid: 4321,
+      runtimeFilePath: '/config/runtime.cost.yaml',
+    };
+
+    writeLoopAnalysisJob(paths.jobPath, job);
+
+    expect(readLoopAnalysisJob(paths.jobPath)).toEqual(job);
   });
 
   it('Given a publication marker, When it moves from pending to settled, Then only the current versioned state is restored', () => {
