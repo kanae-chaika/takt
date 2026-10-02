@@ -4,10 +4,12 @@ import {
   type WorkflowResumePoint,
 } from '../../../core/models/index.js';
 import type { SelectOptionItem } from '../../../shared/prompt/index.js';
+import { sanitizeTerminalText } from '../../../shared/utils/text.js';
 import {
   buildTaskRetryRestartTree,
   formatTaskRetryPath,
   resolveTaskRetryStackPath,
+  type ResolvedTaskRetryPath,
   type TaskRetryRestartTreeNode,
   type TaskRetryStartPathContext,
 } from '../taskRetryStartPath.js';
@@ -76,6 +78,7 @@ export function resolveTaskRetryStartOwnership(
 interface ResumeOption {
   value: string;
   label: string;
+  description: string;
   selection: Extract<TaskRetryStartSelection, { kind: 'resume' }>;
 }
 
@@ -86,18 +89,25 @@ function createResumeOption(
   if (options.resumePoint === undefined) {
     return undefined;
   }
-  const resolved = resolveTaskRetryStackPath(
-    rootWorkflow,
-    options.resumePoint.stack,
-    options,
-    true,
-  );
+  let resolved: ResolvedTaskRetryPath | undefined;
+  try {
+    resolved = resolveTaskRetryStackPath(
+      rootWorkflow,
+      options.resumePoint.stack,
+      options,
+      true,
+    );
+  } catch {
+    // A saved Resume path is optional; an unavailable child must not hide valid restart choices.
+    return undefined;
+  }
   if (resolved === undefined) {
     return undefined;
   }
   return {
     value: RESUME_SELECTION_VALUE,
-    label: `${RESUME_LABEL_PREFIX}${formatTaskRetryPath(resolved.segments)}`,
+    label: `${RESUME_LABEL_PREFIX}${formatTaskRetryPath([options.resumePoint.stack.at(-1)!.step])}`,
+    description: formatTaskRetryPath(resolved.segments),
     selection: { kind: 'resume', resumePoint: options.resumePoint },
   };
 }
@@ -185,9 +195,13 @@ function buildTaskRetryStartCatalog(
   const selections = new Map<string, TaskRetryStartSelection>(flattened.selections);
   const resultLabels = new Map<string, string>(flattened.resultLabels);
   if (resumeOption !== undefined) {
-    promptOptions.push({ label: resumeOption.label, value: resumeOption.value });
+    promptOptions.push({
+      label: resumeOption.label,
+      description: resumeOption.description,
+      value: resumeOption.value,
+    });
     selections.set(resumeOption.value, resumeOption.selection);
-    resultLabels.set(resumeOption.value, resumeOption.label);
+    resultLabels.set(resumeOption.value, `${resumeOption.label} — ${resumeOption.description}`);
   }
   promptOptions.push(...flattened.promptOptions);
   return {
@@ -229,6 +243,12 @@ export function resolveTaskRetryStartOption(
   };
 }
 
+function sanitizeHeadingDescription(description: string): string {
+  // Escape controls individually so complete ANSI sequences remain visible as text.
+  // eslint-disable-next-line no-control-regex
+  return description.replace(/[\x00-\x1f\x7f-\x9f]/gu, (control) => sanitizeTerminalText(control));
+}
+
 export async function selectTaskRetryStart(
   rootWorkflow: WorkflowConfig,
   options: SelectTaskRetryStartOptions,
@@ -238,8 +258,11 @@ export async function selectTaskRetryStart(
   const promptOptions: SelectOptionItem<string>[] = catalog.options.map((option) => ({
     label: option.label,
     value: option.id,
+    ...(option.id === RESUME_SELECTION_VALUE ? { descriptionWrapFromColumns: 80 } : {}),
     ...(option.selectable ? {} : { selectable: false }),
-    ...(option.description === undefined ? {} : { description: option.description }),
+    ...(option.description === undefined ? {} : {
+      description: option.selectable ? option.description : sanitizeHeadingDescription(option.description),
+    }),
   }));
 
   const selectedValue = await selectOption(

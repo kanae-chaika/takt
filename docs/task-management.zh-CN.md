@@ -269,6 +269,8 @@ takt list
 
 **Requeue** 使用相同的 workflow 和起点选择，但不打开对话，直接把任务保存为 `pending`。Retry 和 Requeue 都可以选择 **Resume**（从失败点继续，保留执行状态）或 **Restart**（从任意 step 新开始）；`workflow_call` 子 workflow 中的 step 也可以作为起点。
 
+终端中的 Resume 选项显示简短标签，例如 `Resume failed position: "review" (default)`，并在标签正下方以淡色显示路径说明。路径以 root workflow 开头，以失败 step 结尾，每次调用表示为 `"调用 step" → "目标 workflow"`，例如 `"takt-default" > "develop" → "development-core" > "review"`。终端宽度为80列或以上时，说明会换行显示完整路径。宽度为60列时，仅说明从末尾截断并保留 root 一侧，标签中的失败 step 名和默认标记仍然可见。Web UI 下拉选项和 `Selected start position: …` 确认日志均保留标签与完整路径。
+
 重新排队后，执行使用新的 namespace，因此不会继承原有 ledger，而是从空 ledger 开始。
 
 `/go` 后 retry 对话会显示更新后的指示，提供 **Save as Task**（首项且默认）和 **Continue editing**。选择 Save as Task 会更新原任务并将其放回 `pending`，但不会立即启动 worker。Retry 对话不提供 `/retry`、`/replay` 或立即执行选项；使用 `/cancel` 可在不修改任务的情况下退出。

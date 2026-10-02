@@ -275,6 +275,8 @@ CLI/TUI の assistant と grill-me 会話では `/requeue [補足]` で failed �
 
 **Requeue** も同じ workflow と開始位置の選択を使用しますが、会話を開かずタスクを `pending` として保存します。開始位置の選択はワークフローをツリーとして表示します。有効な Resume 位置がある場合は先頭の行が **Resume failed position**（失敗地点から実行状態を引き継いで再開）になり、その下に選択可能な葉として各 step が並びます。`workflow_call` 配下のサブワークフローは選択できない見出しとして子 step をインデント表示するため、確定できるのは常に葉の step であり、サブワークフロー自体は選べません。有効な Resume 位置がある場合は Resume 行を初期選択し、ない場合は失敗した root step に対応する選択可能な葉を初期選択します。いずれかの葉を選ぶと、その step から新しい実行を開始します。
 
+端末の Resume 行は `Resume failed position: "review" (default)` のような短いラベルの直下に、経路の説明を薄い色で表示します。経路は root workflow を先頭、失敗 step を末尾とし、各呼び出しを `"呼び出し step" → "呼び出し先 workflow"` の組で表します。たとえば `"takt-default" > "develop" → "development-core" > "review"` となります。幅80列以上では説明を折り返して全経路を表示します。幅60列ではroot側を保持して説明だけを末尾から省略し、ラベルの失敗 step 名と既定印を表示します。Web UI のドロップダウンと `Selected start position: …` の確定ログには、ラベルと全経路の両方を残します。
+
 Requeue 後は新しい namespace で実行されるため、台帳を引き継がず白紙で開始します。
 
 `/go` の後、リトライ会話は更新された指示書を表示し、先頭かつ既定の **タスクにつむ** または **編集を続ける** を選択できます。タスクにつむを選ぶと対象タスクの指示書を更新して `pending` に戻しますが、その場ではワーカーを起動しません。Retry 会話では `/retry`、`/replay`、即時実行の選択肢は利用できません。変更せずに終了する場合は `/cancel` を使用します。
