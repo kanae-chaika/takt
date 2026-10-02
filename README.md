@@ -300,7 +300,7 @@ and `/go`.
 
 TAKT also ships two client-integration entrypoints: `takt-acp` runs TAKT as an [Agent Client Protocol](./docs/cli-reference.md#acp-agent) agent over stdio JSON-RPC, and `takt-mcp` runs it as a stdio [MCP server](./docs/cli-reference.md#mcp-server) so an MCP client (Codex, Claude Code, …) can enqueue tasks, inspect task/run state, and send additional instructions to running worktree-clone tasks. Use `takt run` or `takt watch` to execute pending tasks.
 
-The ordinary `takt` assistant conversation has the same read-only task-state view when its provider supports MCP. Use `/go` to turn a new task into an execution or queued task, and `/tell` to select and confirm an additional instruction for a running worktree clone.
+The ordinary `takt` assistant conversation has the same read-only task-state view when its provider supports MCP. Use `/go` to turn a new task into an execution or queued task, `/tell` to select and confirm an additional instruction for a running worktree clone, and `/requeue` or `/retry` to return a failed task to the queue after confirmation.
 
 ### Instant exec mode
 

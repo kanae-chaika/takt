@@ -101,3 +101,20 @@ r1の全6応答の契約表を直接確認し、`CTR-01`～`CTR-03` が各1行�
 `safe-samples.json` / `samples/*.output.md` は36応答と元の採点理由、`summary.json` は件数を保持する。`contract-row-audit.json` は計120契約行のID・観測された状態と12件の実在gapの記録を補助確認する。実行プロンプトhashは全36件で凍結値と一致した。対象36回・grader36回の実sessionを、今回の開始時刻・専用cwd・実行prompt hashで特定して監査し、全72回で `gpt-6-sol` / `high` / `read-only` / approval `never`、ツール呼び出し0件を確認した。監査要約は `runtime-trace-audit.json` に保存し、認証情報・ユーザー識別子・session ID・raw sessionをコピーしていない。固定名のseed計画は読まれていない。
 
 この回帰評価の初回launchは外側sandboxによるSDK app-server初期化の `Operation not permitted` で、モデル呼び出し前に36件のprovider errorとなった。失敗記録を `/tmp/pr1652-source-agnostic-r1-regression-eval-20261002/` に保持し、同じ入力・rubric・モデル・対象のread-only設定で、外側の実行権限を許可された別出力先に再実行した。この36件はケース判定に含めない。最終評価後の関連eval契約25件と差分の空白検査は合格した。
+
+## 最新main統合後の確認
+
+2026-10-02、`origin/main` の `e8246a5ac` を統合した。競合した `eval/scripts/prepare.mjs` はmainのfixture設定・日英の同期済みconfig評価を保持し、report評価に必要な言語別config切替と実Phase 2合成を維持した。`eval/suite-registry.mjs` はmainの新しい日英suite登録と、英語report評価の明示実行登録を両方保持した。日英の既存3＋追加4ケース、rubric、証拠採用基準は変更していない。
+
+統合後にbuildして生成したPhase 2全文とfacetは、最終r1の実モデル評価で保存したものと4件とも同一だった。比較記録は `/tmp/pr1652-merge-main-prompt-hash-audit.json`。実モデルの再評価は行っていない。
+
+| 対象 | 最終r1と統合後で一致したSHA-256 |
+|---|---|
+| 日本語facet | `cd7616ad19aebb4f065608a4c753d20d53f14961eed8186a3e4c3c71bc059e42` |
+| 日本語Phase 2 | `71974e8c908086970048323500bcb3daabe9bf47f5505addfc0e7ba7a0a12974` |
+| 英語facet | `f2e76e8398c1b865c1ad661f2340bfb84f05a3ad0fb8d2ff8cf2a8bb72c33b24` |
+| 英語Phase 2 | `6863256a301b3e7197e93c965edc3bbe3c76a66bfb8b27c4082d62baee84e253` |
+
+最新lockfile準拠の `npm ci --ignore-scripts` 後、build・lint、unit 417ファイル / 6,734件、light IT 164ファイル / 2,715件、eval prepare/provider/registry契約28件、OpenCode v1 probe 11件が合格した。mock E2E smokeは6ファイル / 19件合格、既存のGitHub issue連携1ファイル / 1件はskipだった。差分の空白検査も合格した。
+
+OpenCode probeの初回11件はPATH上のv2.0.21 CLIにより起動待ちtimeoutとなった。隔離環境でv2の起動stdoutを直接確認し、既存v1 SDKが待つ成功出力との不一致を特定した。文書にある検証済みv1 CLI 1.18.2を専用 `/tmp/pr1652-opencode-v1-cli-20261002/` へ導入し、必要なpostinstallを明示実行して実バージョンを確認後、同じprobe全11件が終了コード0で合格した。グローバルCLI・repo lockfile・probeコードは変更していない。失敗記録と成功記録は `/tmp/pr1652-merge-main-opencode-probe*.log` に保持する。既存の採点揺れと証拠採用境界は引き続き未解決であり、今回の統合では仕様判断を行わない。

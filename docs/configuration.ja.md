@@ -27,16 +27,16 @@ notification_sound_events:    # イベントごとの通知音切り替え（省
   workflow_abort: true
   run_complete: true
   run_abort: true
-concurrency: 1                # takt run の並列タスク数（1-10、デフォルト: 1 = 逐次実行）
-task_poll_interval_ms: 500    # takt run での新規タスクポーリング間隔（100-5000、デフォルト: 500）
+concurrency: 1                # takt run / takt watch の並列タスク数（1-10、デフォルト: 1 = 逐次実行）
+task_poll_interval_ms: 500    # takt run / takt watch での新規タスクポーリング間隔（100-5000、デフォルト: 500）
 interactive_preview_steps: 3  # インタラクティブモードでの step プレビュー数（0-10、デフォルト: 3）
-auto_requeue_max_attempts: 0  # takt run 中の失敗 workflow task 自動 requeue 上限（非負整数、デフォルト: 0 = 無効）
+auto_requeue_max_attempts: 0  # takt run / takt watch 中の失敗 workflow task 自動 requeue 上限（非負整数、デフォルト: 0 = 無効）
 ignore_exceed: false          # takt run / takt watch で --ignore-exceed 相当を適用（デフォルト: false）
 assistant:
   formal_spec:
     mode: 'y/N'                # Alloy／Quint モード: true, false, Y/n, y/N（デフォルト: y/N）
     comments: true             # 各形式構造への自然言語の意味コメント（デフォルト: true）
-    model_check_timeout_seconds: 300  # /verify の quint verify と Alloy モデル検査の上限秒数。1〜86400 の整数（デフォルト: 300）
+    model_check_timeout_seconds: 900  # /verify の quint verify と Alloy モデル検査の上限秒数。1〜86400 の整数（デフォルト: 900）
 # auto_fetch: false           # クローン作成前にリモートを fetch（デフォルト: false）
 # base_branch: main           # クローン作成のベースブランチ（デフォルト: リモートのデフォルトブランチ）
 
@@ -192,11 +192,11 @@ assistant:
 | `prevent_sleep` | boolean | `false` | macOS アイドルスリープ防止（caffeinate） |
 | `notification_sound` | boolean | `true` | 通知音の有効化 |
 | `notification_sound_events` | object | - | イベントごとの通知音切り替え |
-| `concurrency` | number (1-10) | `1` | `takt run` の並列タスク数 |
-| `task_poll_interval_ms` | number (100-5000) | `500` | 新規タスクのポーリング間隔 |
+| `concurrency` | number (1-10) | `1` | `takt run` / `takt watch` の並列タスク数 |
+| `task_poll_interval_ms` | number (100-5000) | `500` | 新規タスクのポーリング間隔 (`takt run` / `takt watch`) |
 | `interactive_preview_steps` | number (0-10) | `3` | インタラクティブモードでの step プレビュー数 |
-| `assistant.formal_spec` | boolean \| `"Y/n"` \| `"y/N"` \| object | mode `"y/N"`、comments `true` | Alloy／Quint のガイダンスを追加し、要件を両方の記法でも表現します。object 形式では `mode`、`comments`、`model_check_timeout_seconds` を独立して指定できます。`comments: false` は自然言語の意味コメント指示だけを外し、形式仕様の量・要件網羅・構文と正確性の指示は維持します。`model_check_timeout_seconds` は `/verify` の `quint verify` と Alloy Analyzer に適用する上限秒数（1〜86,400 の整数、デフォルト 300）で、`parse`／`typecheck`／`run` の 60 秒は変わりません。project と global の object はフィールド単位で解決され、project が優先されます。`true` と `false` は質問せず使用します。TTY では `"Y/n"` と `"y/N"` を Yes／No の既定回答として会話セッションごとに1回質問し、非 TTY では標準入力を消費せず既定回答を採用します。Gherkin のガイダンスは開発・実装タスクにだけ適用されます。 |
-| `auto_requeue_max_attempts` | 非負整数 | `0` | `takt run` 中に失敗した workflow task を自動 requeue する上限回数。`0` で無効 |
+| `assistant.formal_spec` | boolean \| `"Y/n"` \| `"y/N"` \| object | mode `"y/N"`、comments `true` | Alloy／Quint のガイダンスを追加し、要件を両方の記法でも表現します。object 形式では `mode`、`comments`、`model_check_timeout_seconds` を独立して指定できます。`comments: false` は自然言語の意味コメント指示だけを外し、形式仕様の量・要件網羅・構文と正確性の指示は維持します。`model_check_timeout_seconds` は `/verify` の `quint verify` と Alloy Analyzer に適用する上限秒数（1〜86,400 の整数、デフォルト 900）で、`parse`／`typecheck`／`run` の 60 秒は変わりません。project と global の object はフィールド単位で解決され、project が優先されます。`true` と `false` は質問せず使用します。TTY では `"Y/n"` と `"y/N"` を Yes／No の既定回答として会話セッションごとに1回質問し、非 TTY では標準入力を消費せず既定回答を採用します。Gherkin のガイダンスは開発・実装タスクにだけ適用されます。 |
+| `auto_requeue_max_attempts` | 非負整数 | `0` | `takt run` / `takt watch` 中に失敗した workflow task を自動 requeue する上限回数。`0` で無効 |
 | `ignore_exceed` | boolean | `false` | `takt run` / `takt watch` の iteration 上限無視を設定します。CLI で `--ignore-exceed` を指定した場合は CLI 指定が優先されます |
 | `sync_project_local_takt_on_retry` | boolean | `true` | retry / 再実行前にルートの project-local `.takt` を worktree へ同期。`false` で worktree 側のコピーを維持 |
 | `worktree_dir` | string | - | 共有クローンのディレクトリ（デフォルトは `../{clone-name}`） |
@@ -272,8 +272,8 @@ caccia:
 provider: claude              # このプロジェクトの provider 上書き
 model: sonnet                 # このプロジェクトのモデル上書き
 auto_pr: true                 # worktree 実行後に PR を自動作成
-concurrency: 2                # このプロジェクトでの takt run 並列タスク数（1-10）
-auto_requeue_max_attempts: 1  # takt run 中の失敗 workflow task 自動 requeue 上限（非負整数）
+concurrency: 2                # このプロジェクトでの takt run / takt watch 並列タスク数（1-10）
+auto_requeue_max_attempts: 1  # takt run / takt watch 中の失敗 workflow task 自動 requeue 上限（非負整数）
 ignore_exceed: false          # takt run / takt watch で --ignore-exceed 相当を適用
 # base_branch: main           # クローン作成のベースブランチ（グローバルを上書き、デフォルト: リモートのデフォルトブランチ）
 
@@ -335,6 +335,12 @@ ignore_exceed: false          # takt run / takt watch で --ignore-exceed 相当
 ### Pi provider の session 境界
 
 TAKT の Pi provider は現在の TAKT process 内だけで使う embedded な in-memory Pi SDK session を使用します。Pi の session JSONL ファイルを書き込まず、Pi CLI のグローバル `settings.json` も読み書きしません。そのため、デフォルト model、thinking level、shell、retry option などの Pi グローバル設定は TAKT に自動継承されません。
+
+同じ process と作業ディレクトリ内でキャッシュ済み session を再利用する場合、明示拡張やリソース読み込み設定を変更しても論理 session ID と会話履歴を保持します。SessionManager を履歴の正本とし、先行 turn の終了と旧 runtime の shutdown を待ってから SDK runtime を交換します。model、thinking level、ツール許可は turn ごとに適用します。
+
+shutdown 成功後に交換先の初期化が失敗しても、会話履歴は後続の再構築に引き継ぎます。破棄済み runtime は再利用しません。shutdown 自体が失敗した場合は、交換と同じ論理 session での後続呼び出しを拒否します。
+
+Pi のツール許可は通常実行と入れ子実行の直前に検証します。空または空白だけの allowlist は全ツールを拒否します。登録元の検証失敗時はツールを無効化して実行を中断し、同じ論理 session の拡張構成を変更しても失敗状態を解除しません。標準の TAKT loader は SDK の組み込み MCP、codemode、tool search 拡張を自動で有効化しません。この検証は OS sandbox やツールごとの確認 prompt を提供するものではありません。
 
 Pi のデフォルトとして使う model は TAKT の設定で明示してください。model の選択と thinking level の選択は分けて設定します。legacy `config.yaml` モードでは、明示的な option を推奨します。
 
@@ -422,8 +428,8 @@ terminal tool の完全一致反復は、廃止された累積検出ではなく
 | `auto_pr` | boolean | - | worktree 実行後に PR を自動作成 |
 | `caccia` | object | 無効 | CodeRabbit レビューループ設定（上記参照） |
 | `draft_pr` | boolean | `false`（global 設定由来） | 自動作成する PR を draft として作成 |
-| `concurrency` | number (1-10) | `1`（global 設定由来） | `takt run` の並列タスク数 |
-| `auto_requeue_max_attempts` | 非負整数 | `0`（global 設定またはデフォルト由来） | `takt run` 中に失敗した workflow task を自動 requeue する上限回数。`0` で無効 |
+| `concurrency` | number (1-10) | `1`（global 設定由来） | `takt run` / `takt watch` の並列タスク数 |
+| `auto_requeue_max_attempts` | 非負整数 | `0`（global 設定またはデフォルト由来） | `takt run` / `takt watch` 中に失敗した workflow task を自動 requeue する上限回数。`0` で無効 |
 | `ignore_exceed` | boolean | `false`（global 設定またはデフォルト由来） | `takt run` / `takt watch` の iteration 上限無視を設定します。CLI で `--ignore-exceed` を指定した場合は CLI 指定が優先されます |
 | `base_branch` | string | - | クローン作成のベースブランチ（グローバルを上書き、デフォルト: リモートのデフォルトブランチ） |
 | `assistant.init_files` | string[] | - | project config 専用のインタラクティブ assistant 初期コンテキストファイル。パスは project root 相対で指定します。絶対パス、project root 外へ解決されるパス、`.env*` / `.npmrc` / `.pypirc` / `.netrc` / `*.pem` / `*.key` / `.git/**` などの機密ファイルパターンは拒否されます。存在しないパス、ディレクトリ、読めないファイルは分かるエラーになります。最大16ファイルまで指定でき、1ファイルは256KiB、合計本文は1MiBまでです。未設定または空の場合、`CLAUDE.md`、`AGENT.md`、`AGENTS.md`、`TAKT.md` などは自動探索されません。assistant の provider/model だけを制御する `takt_providers.assistant` とは別設定です。 |
@@ -1502,7 +1508,8 @@ provider_options:
 - 暗黙の project-local Pi resource は信頼せず、読み込みません。project package storage から再利用するのは、明示した npm source に対して検出した絶対 path だけです。
 - `readonly` と `edit` では、明示的に設定した各 extension のうち、builtin と異なる名前の tool を1つの trust unit としてまとめて有効化します。ambient に自動探索された extension tool は、これらの restrictive mode では有効化しません。非空の `allowedTools` は builtin の名前を絞り込み、同名の extension 版にも適用します。`allowedTools: []` は明示 extension tool を含むすべての tool を拒否します。空文字列や空白だけの項目しか含まないリストも同じ扱いです。
 - permission mode 未指定時も、明示した `allowedTools` に登録元の検証を適用します。自動探索された extension の tool は、`allowedTools` に記載しても除外されます。extension の tool を有効にするには、`extensions` に読み込み元を明示し、`allowedTools` に tool 名を指定してください。extension を設定しても、リストにない tool は追加しません。skills・prompts・themes のみを含む package も、extension tool を許可せず従来どおり読み込みます。
-- 明示的に設定した extension が factory 初期化時に builtin と同名の tool を登録すると、通常の Pi と同様に extension 版が builtin を置き換えます。`readonly` と `edit` では、mode が許可する builtin 名であり、かつ `allowedTools` を指定した場合はそのリストにも含まれる必要があります。permission mode 未指定で明示的な `allowedTools` を指定した場合、および `full` で readonly tool だけのリストを指定した場合も、tool 名をリストに含める必要があります。例えば `readonly` + `['grep']` では extension の `read` は有効にならず、`edit` + `['read']` では extension の `bash` は有効になりません。除外した名前の builtin 版への fallback もありません。これらの分岐では ambient の上書きも引き続き除外します。`full` 以外では provenance を検証できなければ Pi call を停止し、`session_start` で後から builtin の登録元を変更した場合も同様です。
+- 明示的に設定した extension が factory 初期化時に builtin と同名の tool を登録すると、通常の Pi と同様に extension 版が builtin を置き換えます。`readonly` と `edit` では、mode が許可する builtin 名であり、かつ `allowedTools` を指定した場合はそのリストにも含まれる必要があります。permission mode 未指定で明示的な `allowedTools` を指定した場合、および `full` で readonly tool だけのリストを指定した場合も、tool 名をリストに含める必要があります。例えば `readonly` + `['grep']` では extension の `read` は有効にならず、`edit` + `['read']` では extension の `bash` は有効になりません。除外した名前の builtin 版への fallback もありません。これらの分岐では ambient の上書きも引き続き除外します。`full` を含む全 mode で provenance を検証できなければ Pi call を停止し、`session_start` で後から builtin の登録元を変更した場合も同様です。
+- 登録元の整合性検証は、ツールの権限付与とは別です。`full` は `allowedTools` 未指定なら登録済みツールをすべて許可し、SDK が選択した正当な active-tool 一覧を維持します。登録元は cached call、registry refresh、直接のツール選択、通常・nested tool の実行直前で検証します。正当な動的登録は引き続き使えますが、登録元の改変を検出すると全ツールを無効化して実行を中断し、同じ logical session では失敗状態を解除しません。
 - Pi の permission mode は active-tool allowlist であり、OS sandbox ではありません。信頼した明示 extension は `permission_mode: readonly` でも process を実行したり file を変更したりできます。明示 extension の読み込み失敗や provenance 検証失敗は、Pi call を error で停止します。
 - 明示した extension は TAKT process 内で実行されるため、信頼できる local path と package source だけを設定してください。
 - 認証情報を埋め込んだ URL や secret 系 query parameter を含む extension URL は拒否します。
