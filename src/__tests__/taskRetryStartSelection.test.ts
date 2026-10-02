@@ -18,6 +18,7 @@ import {
 } from '../features/tasks/taskRetryStartPath.js';
 import type { SelectOptionItem } from '../shared/prompt/index.js';
 import { attachWorkflowOpaqueRef } from '../infra/config/loaders/workflowSourceMetadata.js';
+import { DebugLogger } from '../shared/utils/debug.js';
 
 const mockResolveWorkflowCallTarget = vi.hoisted(() => vi.fn());
 
@@ -673,6 +674,43 @@ describe('resume checkpoint is preserved across the tree picker', () => {
       expect(await selectTaskRetryStart(root, context, async () => null)).toBeNull();
     },
   );
+
+  it('should debug-log a Resume path resolution error while preserving restart choices', () => {
+    const root = makeWorkflow({
+      name: 'default', ref: 'project:root',
+      steps: [agentStep('plan'), callStep('delegate', 'coding'), agentStep('finish')],
+    });
+    mockResolveWorkflowCallTarget.mockImplementation(() => {
+      throw new Error('Resolver failed unexpectedly');
+    });
+    const resumePoint: WorkflowResumePoint = {
+      ...rootResumePoint('delegate', 'agent'),
+      stack: [
+        { ...rootResumePoint('delegate', 'agent').stack[0]!, kind: 'workflow_call', call_instance: 1 },
+        { workflow: 'coding', workflow_ref: 'project:coding', step: 'review', kind: 'agent', occurrence: 1 },
+      ],
+    };
+    const writeLog = vi.spyOn(DebugLogger.getInstance(), 'writeLog');
+
+    try {
+      const catalog = buildTaskRetryStartOptions(root, {
+        ...pathContext,
+        resumePoint,
+        preferredRootStep: 'finish',
+      });
+
+      expect(catalog.options.some((option) => option.id === 'resume-checkpoint')).toBe(false);
+      expect(catalog.defaultId).toBe('restart:2');
+      expect(writeLog).toHaveBeenCalledWith(
+        'DEBUG',
+        'task-retry-start',
+        'Failed to resolve saved task retry Resume path',
+        { error: 'Resolver failed unexpectedly' },
+      );
+    } finally {
+      writeLog.mockRestore();
+    }
+  });
 
   it.each([
     { childState: 'missing', source: 'step' },

@@ -5,6 +5,7 @@ import {
 } from '../../../core/models/index.js';
 import type { SelectOptionItem } from '../../../shared/prompt/index.js';
 import { sanitizeTerminalText } from '../../../shared/utils/text.js';
+import { createLogger, getErrorMessage } from '../../../shared/utils/index.js';
 import {
   buildTaskRetryRestartTree,
   formatTaskRetryPath,
@@ -19,6 +20,7 @@ const RESTART_VALUE_PREFIX = 'restart:';
 const HEADING_VALUE_PREFIX = 'heading:';
 const RESUME_LABEL_PREFIX = 'Resume failed position: ';
 const TREE_INDENT = '  ';
+const log = createLogger('task-retry-start');
 
 export type TaskRetryStartSelection =
   | { kind: 'resume'; resumePoint: WorkflowResumePoint }
@@ -97,8 +99,11 @@ function createResumeOption(
       options,
       true,
     );
-  } catch {
+  } catch (error) {
     // A saved Resume path is optional; an unavailable child must not hide valid restart choices.
+    log.debug('Failed to resolve saved task retry Resume path', {
+      error: getErrorMessage(error),
+    });
     return undefined;
   }
   if (resolved === undefined) {
