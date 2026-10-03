@@ -19,10 +19,11 @@ import {
 import {
   aggregateResultFromStdout,
   extractSessionIdFromStdout,
+  findRateLimitNoticeInStdout,
 } from './stream-json-lines.js';
 import { buildClaudeHeadlessResponse } from './result-response.js';
 import type { ClaudeHeadlessCallOptions } from './types.js';
-import { buildRateLimitedResponseFields, containsRateLimitError, containsRateLimitMarker } from '../rate-limit/detection.js';
+import { buildRateLimitedResponseFields, containsRateLimitError, findRateLimitMarkerNoticeLine } from '../rate-limit/detection.js';
 
 const log = createLogger('claude-headless');
 
@@ -46,9 +47,9 @@ function findRateLimitText(
 }
 
 function selectRateLimitOutcome(error: ExecError, message: string): HeadlessRateLimitOutcome | undefined {
-  const streamMarkerText = [error.stdout, error.stderr]
-    .map((text) => findRateLimitText(text, containsRateLimitMarker))
-    .find((text): text is string => text !== undefined);
+  // stdout は stream-json のイベント単位、stderr は 1 行単位で通知文を探す (#1674)。
+  const streamMarkerText = findRateLimitNoticeInStdout(error.stdout)
+    ?? findRateLimitMarkerNoticeLine(error.stderr);
   if (streamMarkerText) {
     return { text: streamMarkerText, source: 'stream_marker' };
   }

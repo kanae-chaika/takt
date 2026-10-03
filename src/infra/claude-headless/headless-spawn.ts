@@ -1,7 +1,8 @@
 import { crossSpawn, guardChildProcessStreams } from '../../shared/utils/index.js';
 import { buildEnvWithNestedObservabilitySnapshot } from '../../shared/telemetry/index.js';
-import { containsRateLimitMarker } from '../rate-limit/detection.js';
+import { isRateLimitMarkerNotice } from '../rate-limit/detection.js';
 import {
+  tryExtractRateLimitNoticeFromStreamJsonLine,
   tryExtractTextFromStreamJsonLine,
   tryExtractThinkingFromStreamJsonLine,
   tryExtractToolResultFromStreamJsonLine,
@@ -129,6 +130,18 @@ export function runHeadlessCli(
       reject(error);
     };
 
+    const rejectWithRateLimit = (): void => {
+      child.kill('SIGTERM');
+      rejectOnce(
+        createExecError(HEADLESS_RATE_LIMIT_MESSAGE, {
+          stdout,
+          stderr,
+        }),
+      );
+    };
+
+    let stderrLineBuffer = '';
+
     const appendChunk = (target: 'stdout' | 'stderr', chunk: Buffer | string): void => {
       const text = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
       const byteLength = Buffer.byteLength(text);
@@ -147,15 +160,6 @@ export function runHeadlessCli(
           return;
         }
         stdout += text;
-        if (containsRateLimitMarker(stdout)) {
-          child.kill('SIGTERM');
-          rejectOnce(
-            createExecError(HEADLESS_RATE_LIMIT_MESSAGE, {
-              stdout,
-              stderr,
-            }),
-          );
-        }
         return;
       }
 
@@ -172,14 +176,13 @@ export function runHeadlessCli(
         return;
       }
       stderr += text;
-      if (containsRateLimitMarker(stderr)) {
-        child.kill('SIGTERM');
-        rejectOnce(
-          createExecError(HEADLESS_RATE_LIMIT_MESSAGE, {
-            stdout,
-            stderr,
-          }),
-        );
+      // stderr は stream-json ではないので、1 行全体が rate limit 通知文になっている行だけを見る。
+      // 直前の改行以降（途中で切れた最終行を含む）だけを走査する。
+      stderrLineBuffer += text;
+      const stderrLines = stderrLineBuffer.split('\n');
+      stderrLineBuffer = stderrLines[stderrLines.length - 1] ?? '';
+      if (stderrLines.some((line) => isRateLimitMarkerNotice(line))) {
+        rejectWithRateLimit();
       }
     };
 
@@ -190,7 +193,18 @@ export function runHeadlessCli(
       lineBuffer = final ? '' : (parts.pop() ?? '');
       // stdout can keep arriving after the call has settled (the listener stays
       // attached until close): keep trimming lineBuffer, but deliver no more events.
-      if (!options.onStream || settled) return;
+      if (settled) return;
+
+      // rate limit 通知は構造化された stream-json イベント単位で判定する。
+      // 累積 stdout の部分一致では tool_result 内の文字列でも CLI を止めてしまう (#1674)。
+      for (const line of parts) {
+        if (tryExtractRateLimitNoticeFromStreamJsonLine(line) !== undefined) {
+          rejectWithRateLimit();
+          return;
+        }
+      }
+
+      if (!options.onStream) return;
 
       try {
         for (const line of parts) {

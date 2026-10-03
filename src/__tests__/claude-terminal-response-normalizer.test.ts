@@ -127,6 +127,20 @@ describe('Claude terminal response normalizer', () => {
     });
   });
 
+  it('Given assistant text only mentions the rate limit wording, When normalizing, Then it is not treated as rate_limited', () => {
+    // #1674: ファイル内容の報告や説明に通知文の語が含まれるだけ
+    const assistantText = 'このリポジトリの検出パターンは usage_limit_exceeded です。';
+    const result = normalizeClaudeTerminalResponse({
+      agentName: 'coder',
+      sessionId: 'claude-session-1',
+      assistantText,
+    });
+
+    expect(result.status).not.toBe('rate_limited');
+    expect(result).not.toHaveProperty('errorKind');
+    expect(result).not.toHaveProperty('rateLimitInfo');
+  });
+
   it('Given assistant text contains a rate limit marker, When normalizing, Then rate_limited response is returned', () => {
     const result = normalizeClaudeTerminalResponse({
       agentName: 'coder',
