@@ -724,6 +724,43 @@ describe('callClaudeHeadless', () => {
     expect(lastKill).not.toHaveBeenCalled();
   });
 
+  it('通知文のマルチバイト文字がチャンク境界で分割されても、ストリーム側の UTF-8 デコードで検出する', async () => {
+    // 実環境と同じく PassThrough に write して流す（setEncoding('utf8') の経路を通す）。
+    // ’ (U+2019, 3 バイト) の途中でチャンクを切る。
+    const markerText = 'You’re out of extra usage · resets 2:30pm (Asia/Tokyo)';
+    const line = Buffer.from(`${JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: markerText }] },
+    })}\n`, 'utf-8');
+    const quoteIndex = line.indexOf(Buffer.from('’', 'utf-8'));
+    expect(quoteIndex).toBeGreaterThan(0);
+    const splitAt = quoteIndex + 1;
+
+    vi.mocked(spawn).mockImplementation(() => {
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const proc = new EventEmitter() as EventEmitter & Partial<ChildProcess>;
+      proc.stdout = stdout;
+      proc.stderr = stderr;
+      lastKill = vi.fn();
+      proc.kill = lastKill as unknown as ChildProcess['kill'];
+      stdout.on('end', () => proc.emit('close', 0, null));
+      queueMicrotask(() => {
+        stdout.write(line.subarray(0, splitAt));
+        stdout.write(line.subarray(splitAt));
+        stdout.end();
+      });
+      return proc as ChildProcess;
+    });
+
+    const res = await callClaudeHeadless('agent', 'hi', { cwd: '/tmp' });
+
+    expect(res.status).toBe('rate_limited');
+    expect(res.error).toBe(markerText);
+    expect(res.rateLimitInfo?.source).toBe('stream_marker');
+    expect(lastKill).toHaveBeenCalledWith('SIGTERM');
+  });
+
   it('result の errors[] に通知文が入っている場合は stream_marker として返す', async () => {
     const markerText = "You're out of extra usage · resets 2:30pm (Asia/Tokyo)";
     stubSpawn({

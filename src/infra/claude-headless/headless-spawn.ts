@@ -142,8 +142,12 @@ export function runHeadlessCli(
 
     let stderrLineBuffer = '';
 
-    const appendChunk = (target: 'stdout' | 'stderr', chunk: Buffer | string): void => {
-      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+    // setEncoding('utf8') 後の 'data' は string だが、Node の型は Buffer | string のまま。
+    // ストリームを差し替えるテストやラッパーが Buffer を流す場合に備えて文字列化を一本化する。
+    const toUtf8Text = (chunk: Buffer | string): string =>
+      (typeof chunk === 'string' ? chunk : chunk.toString('utf-8'));
+
+    const appendChunk = (target: 'stdout' | 'stderr', text: string): void => {
       const byteLength = Buffer.byteLength(text);
 
       if (target === 'stdout') {
@@ -239,12 +243,13 @@ export function runHeadlessCli(
     child.stderr?.setEncoding('utf8');
 
     child.stdout?.on('data', (chunk: Buffer | string) => {
-      appendChunk('stdout', chunk);
-      lineBuffer += typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+      const text = toUtf8Text(chunk);
+      appendChunk('stdout', text);
+      lineBuffer += text;
       flushLines(false);
     });
 
-    child.stderr?.on('data', (chunk: Buffer | string) => appendChunk('stderr', chunk));
+    child.stderr?.on('data', (chunk: Buffer | string) => appendChunk('stderr', toUtf8Text(chunk)));
 
     const guardTeardown = guardChildProcessStreams(child, (error, source) => {
       if (source === 'process') {
