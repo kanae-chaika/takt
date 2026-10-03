@@ -4,6 +4,8 @@ import {
   type WorkflowResumePoint,
 } from '../../../core/models/index.js';
 import type { SelectOptionItem } from '../../../shared/prompt/index.js';
+import { warn } from '../../../shared/ui/index.js';
+import { sanitizeTerminalText } from '../../../shared/utils/text.js';
 import {
   buildTaskRetryRestartTree,
   formatTaskRetryPath,
@@ -17,6 +19,13 @@ const RESTART_VALUE_PREFIX = 'restart:';
 const HEADING_VALUE_PREFIX = 'heading:';
 const RESUME_LABEL_PREFIX = 'Resume failed position: ';
 const TREE_INDENT = '  ';
+
+export class InvalidTaskRetryResumeWithoutRestartError extends Error {
+  constructor(reason: string) {
+    super(`${reason}. Saved resume information cannot be carried forward. No restart positions are available; retry cancelled.`);
+    this.name = 'InvalidTaskRetryResumeWithoutRestartError';
+  }
+}
 
 export type TaskRetryStartSelection =
   | { kind: 'resume'; resumePoint: WorkflowResumePoint }
@@ -49,6 +58,7 @@ export interface TaskRetryStartOption {
 export interface TaskRetryStartOptionsModel {
   readonly options: readonly TaskRetryStartOption[];
   readonly defaultId: string;
+  readonly resumeFailureReason?: string;
 }
 
 /** Engine-owned retry fields derived from one opaque start selection. */
@@ -82,23 +92,30 @@ interface ResumeOption {
 function createResumeOption(
   rootWorkflow: WorkflowConfig,
   options: SelectTaskRetryStartOptions,
-): ResumeOption | undefined {
+): ResumeOption | { reason: string } | undefined {
   if (options.resumePoint === undefined) {
     return undefined;
   }
-  const resolved = resolveTaskRetryStackPath(
+  let stack = options.resumePoint.stack;
+  let resolved = resolveTaskRetryStackPath(
     rootWorkflow,
-    options.resumePoint.stack,
+    stack,
     options,
-    true,
   );
-  if (resolved === undefined) {
-    return undefined;
+  if ('reason' in resolved) {
+    const failure = resolved;
+    while (stack.length > 1 && 'reason' in resolved) {
+      stack = stack.slice(0, -1);
+      resolved = resolveTaskRetryStackPath(rootWorkflow, stack, options);
+    }
+    if ('reason' in resolved) {
+      return failure;
+    }
   }
   return {
     value: RESUME_SELECTION_VALUE,
     label: `${RESUME_LABEL_PREFIX}${formatTaskRetryPath(resolved.segments)}`,
-    selection: { kind: 'resume', resumePoint: options.resumePoint },
+    selection: { kind: 'resume', resumePoint: { ...options.resumePoint, stack } },
   };
 }
 
@@ -173,11 +190,17 @@ function buildTaskRetryStartCatalog(
 ): TaskRetryStartCatalog {
   const tree = buildTaskRetryRestartTree(rootWorkflow, options);
   const flattened = flattenRestartTree(tree, options.preferredRootStep);
-  const resumeOption = createResumeOption(rootWorkflow, options);
+  const resumeResolution = createResumeOption(rootWorkflow, options);
+  const resumeOption = resumeResolution !== undefined && 'selection' in resumeResolution
+    ? resumeResolution
+    : undefined;
   const defaultId = resumeOption?.value
     ?? flattened.preferredLeafValue
     ?? flattened.firstLeafValue;
   if (defaultId === undefined) {
+    if (resumeResolution !== undefined && 'reason' in resumeResolution) {
+      throw new InvalidTaskRetryResumeWithoutRestartError(resumeResolution.reason);
+    }
     throw new Error(`Workflow "${rootWorkflow.name}" has no authored steps to restart from`);
   }
 
@@ -200,6 +223,9 @@ function buildTaskRetryStartCatalog(
     defaultId,
     selections,
     resultLabels,
+    ...(resumeResolution !== undefined && 'reason' in resumeResolution
+      ? { resumeFailureReason: resumeResolution.reason }
+      : {}),
   };
 }
 
@@ -209,7 +235,11 @@ export function buildTaskRetryStartOptions(
   options: SelectTaskRetryStartOptions,
 ): TaskRetryStartOptionsModel {
   const catalog = buildTaskRetryStartCatalog(rootWorkflow, options);
-  return { options: catalog.options, defaultId: catalog.defaultId };
+  return {
+    options: catalog.options,
+    defaultId: catalog.defaultId,
+    ...(catalog.resumeFailureReason === undefined ? {} : { resumeFailureReason: catalog.resumeFailureReason }),
+  };
 }
 
 /** Resolve an opaque choice against the current workflow snapshot. */
@@ -234,7 +264,19 @@ export async function selectTaskRetryStart(
   options: SelectTaskRetryStartOptions,
   selectOption: TaskRetryStartOptionSelector,
 ): Promise<TaskRetryStartSelectionResult | null> {
-  const catalog = buildTaskRetryStartCatalog(rootWorkflow, options);
+  let catalog: TaskRetryStartCatalog;
+  try {
+    catalog = buildTaskRetryStartCatalog(rootWorkflow, options);
+  } catch (error) {
+    if (!(error instanceof InvalidTaskRetryResumeWithoutRestartError)) {
+      throw error;
+    }
+    warn(sanitizeTerminalText(error.message));
+    return null;
+  }
+  if (catalog.resumeFailureReason !== undefined) {
+    warn(sanitizeTerminalText(`${catalog.resumeFailureReason}. Saved resume information cannot be carried forward. Select a position to restart execution, or Cancel.`));
+  }
   const promptOptions: SelectOptionItem<string>[] = catalog.options.map((option) => ({
     label: option.label,
     value: option.id,
