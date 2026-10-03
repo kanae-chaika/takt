@@ -32,17 +32,14 @@ type HeadlessRateLimitOutcome = {
   source: 'sdk_error' | 'stream_marker';
 };
 
-function findRateLimitText(
-  text: string | undefined,
-  predicate: (candidate: string) => boolean,
-): string | undefined {
+function findRateLimitErrorText(text: string | undefined): string | undefined {
   if (!text) {
     return undefined;
   }
 
   const parsed = aggregateResultFromStdout(text);
   return [parsed.error, parsed.content, parsed.displayText, text.trim()].find(
-    (candidate): candidate is string => candidate !== undefined && predicate(candidate),
+    (candidate): candidate is string => candidate !== undefined && containsRateLimitError(candidate),
   );
 }
 
@@ -55,7 +52,7 @@ function selectRateLimitOutcome(error: ExecError, message: string): HeadlessRate
   }
 
   const rateLimitText = [error.stderr, error.stdout, message]
-    .map((text) => findRateLimitText(text, containsRateLimitError))
+    .map((text) => findRateLimitErrorText(text))
     .find((text): text is string => text !== undefined);
   if (rateLimitText) {
     return { text: rateLimitText, source: 'sdk_error' };

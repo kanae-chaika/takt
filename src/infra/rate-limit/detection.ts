@@ -19,9 +19,10 @@ const RATE_LIMIT_ERROR_PATTERNS = [
 // 通知は単独の 1 行メッセージとして届くので、本文全体がその形をしているときだけ一致させる。
 // 部分一致にすると、ファイル内容や tool 出力、エージェントの引用（例: この定義を含む diff）
 // に同じ語が現れただけで rate limit と誤検知する (#1674)。
+// 後続は CLI が実際に付ける形（`· resets <時刻>` / `. Please retry later.` / `: resets <時刻>`）だけを許す。
 const RATE_LIMIT_STREAM_MARKER_PATTERNS = [
-  /^(?:you['’]re )?out of extra usage\b[^\n]*$/i,
-  /^usage_limit_exceeded\b[^\n]*$/i,
+  /^(?:you['’]re )?out of extra usage(?:\s*[·.]\s*(?:resets?\b[^\n]*|please retry later\.?))?$/i,
+  /^usage_limit_exceeded(?::\s*resets?\b[^\n]*)?$/i,
 ] as const;
 
 // Match the complete final agent_message item against known Codex notices.

@@ -691,6 +691,39 @@ describe('callClaudeHeadless', () => {
     expect(lastKill).not.toHaveBeenCalled();
   });
 
+  it('stderr の通知文が改行なしで終わっても close 時に rate_limited として返す', async () => {
+    const markerText = "You're out of extra usage · resets 2:30pm (Asia/Tokyo)";
+    stubSpawn({
+      stdoutChunks: [`${JSON.stringify({ type: 'result', subtype: 'success', result: 'ok' })}\n`],
+      stderrChunks: [markerText],
+      closeCode: 0,
+    });
+
+    const res = await callClaudeHeadless('agent', 'hi', { cwd: '/tmp' });
+
+    expect(res).toMatchObject({
+      status: 'rate_limited',
+      errorKind: 'rate_limit',
+      error: markerText,
+      rateLimitInfo: { source: 'stream_marker' },
+    });
+  });
+
+  it('stderr の行がチャンク境界で分割されても、確定した行全体で判定する', async () => {
+    // 'usage_limit_exceeded' だけの断片で止めてしまうと、続きが来た時点で通常の行だったと分かる
+    stubSpawn({
+      stdoutChunks: [`${JSON.stringify({ type: 'result', subtype: 'success', result: 'ok' })}\n`],
+      stderrChunks: ['usage_limit_exceeded', '_count = 0\n'],
+      closeCode: 0,
+    });
+
+    const res = await callClaudeHeadless('agent', 'hi', { cwd: '/tmp' });
+
+    expect(res.status).toBe('done');
+    expect(res.content).toBe('ok');
+    expect(lastKill).not.toHaveBeenCalled();
+  });
+
   it('result の errors[] に通知文が入っている場合は stream_marker として返す', async () => {
     const markerText = "You're out of extra usage · resets 2:30pm (Asia/Tokyo)";
     stubSpawn({
@@ -714,7 +747,7 @@ describe('callClaudeHeadless', () => {
     const markerText = 'usage_limit_exceeded: resets 12:30pm';
     stubSpawn({
       stdoutChunks: ['stdout diagnostic'],
-      stderrChunks: [markerText],
+      stderrChunks: [`${markerText}\n`],
       keepOpen: true,
     });
 

@@ -177,10 +177,10 @@ export function runHeadlessCli(
       }
       stderr += text;
       // stderr は stream-json ではないので、1 行全体が rate limit 通知文になっている行だけを見る。
-      // 直前の改行以降（途中で切れた最終行を含む）だけを走査する。
+      // 改行で確定した行だけを判定し、途中で切れた最終行は close 時にまとめて見る。
       stderrLineBuffer += text;
       const stderrLines = stderrLineBuffer.split('\n');
-      stderrLineBuffer = stderrLines[stderrLines.length - 1] ?? '';
+      stderrLineBuffer = stderrLines.pop() ?? '';
       if (stderrLines.some((line) => isRateLimitMarkerNotice(line))) {
         rejectWithRateLimit();
       }
@@ -234,6 +234,10 @@ export function runHeadlessCli(
       }
     };
 
+    // チャンク境界で分割されたマルチバイト文字（通知文の ’ など）を壊さないよう、ストリーム側で UTF-8 デコードする。
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+
     child.stdout?.on('data', (chunk: Buffer | string) => {
       appendChunk('stdout', chunk);
       lineBuffer += typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
@@ -269,6 +273,14 @@ export function runHeadlessCli(
       }
 
       flushLines(true);
+      if (settled) {
+        return;
+      }
+      // 改行なしで終わった stderr の最終行が通知文なら、ここで一度だけ判定する。
+      if (isRateLimitMarkerNotice(stderrLineBuffer)) {
+        rejectWithRateLimit();
+        return;
+      }
 
       if (options.abortSignal?.aborted) {
         rejectOnce(

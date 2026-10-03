@@ -123,6 +123,9 @@ describe('isRateLimitMarkerNotice', () => {
     "Claude CLI は上限到達時に You're out of extra usage · resets 2:30pm (Asia/Tokyo) と返します。",
     "説明:\nYou're out of extra usage · resets 2:30pm (Asia/Tokyo)\nこの文面を検出対象に追加してください。",
     'usage_limit_exceeded_count = 0',
+    'usage_limit_exceeded: this is a configuration key',
+    'out of extra usage occurs in this documentation',
+    "You're out of extra usage is the notice Claude CLI prints.",
   ])('text that merely contains the notice wording %j is not treated as a rate limit marker', (text) => {
     expect(isRateLimitMarkerNotice(text)).toBe(false);
     expect(resolveRateLimitTextSource(text)).toBeUndefined();
