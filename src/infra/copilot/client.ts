@@ -360,6 +360,8 @@ function findRateLimitMessage(
   output: Pick<CopilotExecError, 'stdout' | 'stderr'>,
   stderrFallback = true,
 ): { message: string; classification: RateLimitClass } | undefined {
+  // 複数の session.error がある場合は使い切りを優先する（429 の後に 402 が来ても再試行しない）
+  let transient: { message: string; classification: RateLimitClass } | undefined;
   for (const line of parseValidJsonLines(output.stdout ?? '')) {
     const root = toRecord(line);
     if (root?.type !== 'session.error') {
@@ -375,12 +377,14 @@ function findRateLimitMessage(
       ? 'Exhausted'
       : classifyRateLimitError(detail, data.statusCode === 429 || data.statusCode === '429'
         || data.errorType === 'rate_limit' || data.errorCode === 'rate_limited' ? 429 : undefined);
-    if (
-      classification !== 'NotRateLimit'
-    ) {
+    if (classification === 'Exhausted') {
       return { message: trimDetail(detail, 'Copilot rate limit exceeded'), classification };
     }
+    if (classification === 'Transient') {
+      transient ??= { message: trimDetail(detail, 'Copilot rate limit exceeded'), classification };
+    }
   }
+  if (transient !== undefined) return transient;
   if (!stderrFallback) return undefined;
   const stderr = output.stderr ?? '';
   const classification = classifyRateLimitError(stderr);
