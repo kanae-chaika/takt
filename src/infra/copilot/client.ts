@@ -368,8 +368,13 @@ function findRateLimitMessage(
     const data = extractCopilotEventData(root);
     const message = firstNonEmptyString([data.message]);
     const detail = [message, output.stderr].filter((value) => value !== undefined).join('\n');
-    const classification = classifyRateLimitError(detail, data.statusCode === 429 || data.statusCode === '429'
-      || data.errorType === 'rate_limit' || data.errorCode === 'rate_limited' ? 429 : undefined);
+    // 月間クォータ切れ（402）は再試行しても回復しないため、構造化フィールドだけで使い切りと判定する
+    const isQuotaExhausted = data.statusCode === 402 || data.statusCode === '402'
+      || data.errorType === 'quota' || data.errorCode === 'quota_exceeded';
+    const classification = isQuotaExhausted
+      ? 'Exhausted'
+      : classifyRateLimitError(detail, data.statusCode === 429 || data.statusCode === '429'
+        || data.errorType === 'rate_limit' || data.errorCode === 'rate_limited' ? 429 : undefined);
     if (
       classification !== 'NotRateLimit'
     ) {
